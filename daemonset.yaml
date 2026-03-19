@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dns-monitor
+  namespace: kube-system
+  labels:
+    app: dns-monitor
+spec:
+  selector:
+    matchLabels:
+      app: dns-monitor
+  template:
+    metadata:
+      labels:
+        app: dns-monitor
+    spec:
+      # КРИТИЧНО 1: Позволяет поду видеть физические интерфейсы хоста (узла)
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+      - name: ebpfdns
+        image: dns-monitor:local
+        # КРИТИЧНО 2: Запрещаем K8s лезть в интернет за образом, используем собранный локально
+        imagePullPolicy: Never
+        env:
+        - name: "HookIfaceName"
+          value: "enp0s3" # Передаем имя интерфейса в Go-код
+        securityContext:
+          # КРИТИЧНО 3: Даем права на загрузку eBPF программ в ядро
+          privileged: true
+        # envFrom:
+        # - configMapRef:
+        #     name: dns-monitor-cfg
+        # - configMapRef:
+        #     name: dns-monitor-cfg-hook

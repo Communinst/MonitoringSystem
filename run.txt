@@ -1,0 +1,14 @@
+go build -o agent
+
+docker build -t dns-monitor:local .
+
+kubectl create configmap dns-monitor-cfg-hook -n kube-system --from-env-file=cmd/hook_cfg.env
+kubectl delete configmap dns-monitor-cfg-hook -n kube-system
+kubectl create configmap dns-monitor-cfg -n kube-system --from-env-file=cmd/.env
+kubectl delete configmap dns-monitor-cfg-n kube-system
+
+docker save dns-monitor:local | sudo k3s ctr images import -
+kubectl apply -f daemonset.yaml
+
+kubectl get pods -n kube-system
+kubectl logs -f dns-monitor-jbc2c -n kube-system

@@ -22,7 +22,7 @@
 
 #pragma once
 
-#include <linux/types.h>
+#include "vmlinux.h"
 
 /*
  *	IEEE 802.3 Ethernet magic constants.  The frame sizes omit the preamble
@@ -141,8 +141,8 @@
  *	This is an Ethernet frame header.
  */
 
-struct ethhdr {
-	unsigned char	h_dest[ETH_ALEN];	/* destination eth addr	*/
-	unsigned char	h_source[ETH_ALEN];	/* source ether addr	*/
-	__be16		h_proto;		/* packet type ID field	*/
-} __attribute__((packed));
+// struct ethhdr {
+// 	unsigned char	h_dest[ETH_ALEN];	/* destination eth addr	*/
+// 	unsigned char	h_source[ETH_ALEN];	/* source ether addr	*/
+// 	__be16		h_proto;		/* packet type ID field	*/
+// } __attribute__((packed));

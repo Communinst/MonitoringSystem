@@ -1,0 +1,10 @@
+*.env
+.git
+.gitignore
+*.md
+Dockerfile*
+docker-compose*.yml
+daemonet.yaml
+agent          
+*.o
+*.elf

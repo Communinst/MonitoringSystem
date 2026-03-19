@@ -54,13 +54,15 @@ type bpfSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfProgramSpecs struct {
-	DnsWatch *ebpf.ProgramSpec `ebpf:"dns_watch"`
+	XdpWatch *ebpf.ProgramSpec `ebpf:"xdp_watch"`
 }
 
 // bpfMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfMapSpecs struct {
+	ConfigMap  *ebpf.MapSpec `ebpf:"config_map"`
+	MetricsMap *ebpf.MapSpec `ebpf:"metrics_map"`
 }
 
 // bpfVariableSpecs contains global variables before they are loaded into the kernel.
@@ -89,10 +91,15 @@ func (o *bpfObjects) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfMaps struct {
+	ConfigMap  *ebpf.Map `ebpf:"config_map"`
+	MetricsMap *ebpf.Map `ebpf:"metrics_map"`
 }
 
 func (m *bpfMaps) Close() error {
-	return _BpfClose()
+	return _BpfClose(
+		m.ConfigMap,
+		m.MetricsMap,
+	)
 }
 
 // bpfVariables contains all global variables after they have been loaded into the kernel.
@@ -105,12 +112,12 @@ type bpfVariables struct {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfPrograms struct {
-	DnsWatch *ebpf.Program `ebpf:"dns_watch"`
+	XdpWatch *ebpf.Program `ebpf:"xdp_watch"`
 }
 
 func (p *bpfPrograms) Close() error {
 	return _BpfClose(
-		p.DnsWatch,
+		p.XdpWatch,
 	)
 }
 
