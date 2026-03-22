@@ -1,3 +1,4 @@
+*.txt
 
 # Binaries for programs and plugins
 *.exe
@@ -27,5 +28,5 @@ go.mod
 .env
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/

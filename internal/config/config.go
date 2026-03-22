@@ -2,14 +2,19 @@ package config
 
 import (
 	"log"
+	"time"
 
 	"github.com/ilyakaznacheev/cleanenv"
 	_ "github.com/ilyakaznacheev/cleanenv"
 )
 
 type BootCfg struct {
-	HookPoint struct {
-		HookIfaceName string `env:"HookIfaceName" env-default:"enp0s3"`
+	IfaceHookPoint struct {
+		XDPIfaceName string `env:"XDP_IFACE_NAME" env-default:"enp0s3"`
+	}
+	HTTPServer struct {
+		Address string        `env:"HTTP_ADDRESS" env-default:"localhost:8080"`
+		Timeout time.Duration `env:"HTTP_TIMEOUT" env-default:"10s"`
 	}
 }
 

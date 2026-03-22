@@ -1,49 +1,44 @@
 package main
 
-// [flag for generate command] [go run] [path]        [archi tecture] [file prefix]  [bpf file path] --(those are inner clang instructions) [include file path] [verifier optimization]
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 bpf ../bpf/dns_monitor.c -- -I./bpf/include -O2 -g -Wall
-
 import (
+	"context"
 	"log"
 	"net"
-	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
+	bpfObj "github.com/Communinst/MonitoringSystem/internal/bpf"
 	"github.com/Communinst/MonitoringSystem/internal/config"
+	"github.com/Communinst/MonitoringSystem/internal/handler"
+	"github.com/Communinst/MonitoringSystem/internal/repository"
+	"github.com/Communinst/MonitoringSystem/internal/router"
+	"github.com/Communinst/MonitoringSystem/internal/server"
+	"github.com/Communinst/MonitoringSystem/internal/service"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 
 	_ "github.com/lpernett/godotenv"
+	"github.com/prometheus/client_golang/prometheus"
 	_ "github.com/prometheus/client_golang/prometheus"
 	_ "github.com/prometheus/client_golang/prometheus/promauto"
 	_ "github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
-	if err := rlimit.RemoveMemlock(); err != nil {
-		log.Fatalf("Failed to remove memlock: %v", err)
-	}
 
-	var objs bpfObjects
-	if err := loadBpfObjects(&objs, nil); err != nil {
-		log.Fatalf("Failed to load eBPF objects: %v", err)
+	objs, err := bootBPF()
+	if err != nil {
+		return
 	}
 	defer objs.Close()
 
-	// if err := config.LoadAllEnv(); err != nil {
-	// 	return
-	// }
 	_ = config.LoadAllEnv()
-	
 	cfg, err := config.LoadNewBootCfg()
 	if err != nil {
 		return
 	}
-	// Cloud native environment is more used to virtual interfaces, probably should be replaced
-	ifaceName := cfg.HookPoint.HookIfaceName
+
+	ifaceName := cfg.IfaceHookPoint.XDPIfaceName
 	iface, err := net.InterfaceByName(ifaceName)
 	if err != nil {
 		log.Fatalf("Failed to find interface %s: %v", ifaceName, err)
@@ -67,23 +62,41 @@ func main() {
 	}
 	log.Printf("Set max DNS response size to %d bytes", maxDnsSize)
 
-	stopper := make(chan os.Signal, 1)
-	signal.Notify(stopper, os.Interrupt, syscall.SIGTERM)
+	// -------------------------
+	reg := prometheus.NewRegistry()
+	confRepo := repository.NewbpfConfigRepository(&objs.BpfMaps)
+	metricsRepo := repository.NewBpfMetricsRepository(&objs.BpfMaps)
 
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+	repository := repository.NewDNSMonitorRepository(confRepo, metricsRepo)
+	service := service.NewDNSMonitorService(repository, reg)
 
-	log.Println("Waiting for packets... (Press Ctrl+C to exit)")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	for {
-		select {
-		case <-ticker.C:
-			printMetrics(objs.MetricsMap)
-		case <-stopper:
-			log.Println("Exiting and detaching eBPF program...")
-			return
-		}
+	// Запускаем сборщик метрик каждые 2 секунды
+	go service.Metrics.StartCollector(ctx, 2*time.Second)
+
+	handler := handler.NewDNSMonitorHandler(service, reg)
+	router := router.NewRouter(handler)
+
+	server := server.NewServer(":8080", router.Init(), 10*time.Second, 10*time.Second)
+	server.Run()
+	// ---
+
+}
+
+func bootBPF() (bpfObj.BpfObjects, error) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		log.Fatalf("Failed to remove memlock: %v", err)
+		return bpfObj.BpfObjects{}, err
 	}
+
+	var objs bpfObj.BpfObjects
+	if err := bpfObj.LoadBpfObjects(&objs, nil); err != nil {
+		log.Fatalf("Failed to load eBPF objects: %v", err)
+		return bpfObj.BpfObjects{}, err
+	}
+	return objs, nil
 }
 
 // PERCPU return array value by core

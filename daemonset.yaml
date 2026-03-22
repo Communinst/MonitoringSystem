@@ -22,14 +22,14 @@ spec:
         image: dns-monitor:local
         # КРИТИЧНО 2: Запрещаем K8s лезть в интернет за образом, используем собранный локально
         imagePullPolicy: Never
-        env:
-        - name: "HookIfaceName"
-          value: "enp0s3" # Передаем имя интерфейса в Go-код
+        # env:
+        # - name: "HookIfaceName"
+        #   value: "enp0s3" # Передаем имя интерфейса в Go-код
         securityContext:
           # КРИТИЧНО 3: Даем права на загрузку eBPF программ в ядро
           privileged: true
-        # envFrom:
-        # - configMapRef:
-        #     name: dns-monitor-cfg
-        # - configMapRef:
-        #     name: dns-monitor-cfg-hook
+        envFrom:
+        - configMapRef:
+            name: dns-monitor-cfg
+        - configMapRef:
+            name: dns-monitor-cfg-hook
