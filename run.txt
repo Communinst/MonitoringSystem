@@ -19,8 +19,14 @@ sudo k3s crictl rmi --prune
 
 kubectl describe pod dns-monitor-k4nwt -n kube-system
 
+curl "localhost:8080/metrics"
 curl -X POST http://localhost:8080/api/v1/threshold \
   -H "Content-Type: application/json" \
   -d '{"threshold": 1024}'
 
 dig +dnssec +bufsize=4096 DNSKEY . @8.8.8.8
+dig @8.8.8.8 google.com
+
+
+
+udo bpftool map dump name metrics_map

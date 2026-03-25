@@ -2,9 +2,9 @@ package repository
 
 import (
 	"fmt"
-	"runtime"
 
 	"github.com/Communinst/MonitoringSystem/internal/bpf"
+	"github.com/cilium/ebpf"
 )
 
 type bpfMetricsRepository struct {
@@ -18,8 +18,7 @@ func NewBpfMetricsRepository(maps *bpf.BpfMaps) BpfMetricsRepositoryIface {
 }
 
 func (r *bpfMetricsRepository) GetMetrics() (passed uint64, dropped uint64, err error) {
-	cpuCount := uint64(runtime.NumCPU())
-	perCPUValues := make([]uint64, cpuCount)
+	perCPUValues := make([]uint64, ebpf.MustPossibleCPU())
 
 	keyPassed := uint32(0)
 	if err := r.maps.MetricsMap.Lookup(&keyPassed, &perCPUValues); err != nil {
