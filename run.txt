@@ -1,14 +1,3 @@
-go build -o agent
-
-docker build -t dns-monitor:local .
-
-kubectl create configmap dns-monitor-cfg-hook -n kube-system --from-env-file=cmd/hook_cfg.env
-kubectl delete configmap dns-monitor-cfg-hook -n kube-system
-kubectl create configmap dns-monitor-cfg -n kube-system --from-env-file=cmd/.env
-kubectl delete configmap dns-monitor-cfg-n kube-system
-
-docker save dns-monitor:local | sudo k3s ctr images import -
-kubectl apply -f daemonset.yaml
 
 kubectl get pods -n kube-system
 kubectl logs -f <name> -n kube-system
@@ -16,17 +5,16 @@ kubectl logs -f <name> -n kube-system
 sudo k3s crictl images
 sudo k3s crictl rmi --prune
 
-
-kubectl describe pod dns-monitor-k4nwt -n kube-system
+kubectl describe pod dns-monitor-name -n kube-system
 
 curl "localhost:8080/metrics"
 curl -X POST http://localhost:8080/api/v1/threshold \
   -H "Content-Type: application/json" \
   -d '{"threshold": 1024}'
 
-dig +dnssec +bufsize=4096 DNSKEY . @8.8.8.8
+dig +dnssec +bufsize=4096 google.com . @8.8.8.8
 dig @8.8.8.8 google.com
 
 
 
-udo bpftool map dump name metrics_map
+sudo bpftool map dump name metrics_map
