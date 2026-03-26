@@ -17,7 +17,7 @@ func (r *Router) Init() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
 
-	router.GET("/metrics", r.handler.Metrics.Run)
+	router.GET("/metrics", r.handler.Prom.Handler())
 	//router.Use(middleware...)
 
 	// Swagger documentation route

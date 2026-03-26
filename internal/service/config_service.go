@@ -1,7 +1,9 @@
 package service
 
 import (
+	"context"
 	"log"
+	"time"
 
 	"github.com/Communinst/MonitoringSystem/internal/repository"
 )
@@ -16,8 +18,11 @@ func NewbpfConfigService(repo repository.BpfConfigRepositoryIface) *bpfConfigSer
 	}
 }
 
-func (s *bpfConfigService) UpdateThreshold(threshold uint32) error {
-	if err := s.repo.UpdateThreshold(threshold); err != nil {
+func (s *bpfConfigService) UpdateThreshold(ctx context.Context, threshold uint32) error {
+	c, cancel := context.WithTimeout(ctx, time.Second*10)
+	defer cancel()
+
+	if err := s.repo.UpdateThreshold(c, threshold); err != nil {
 		return err
 	}
 	log.Printf("Service: successfully updated drop threshold to %d bytes", threshold)

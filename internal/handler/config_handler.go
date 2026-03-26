@@ -40,7 +40,7 @@ func (h *bpfConfigHandler) UpdateThreshold(c *gin.Context) {
 	}
 
 	// Передаем в бизнес-логику
-	if err := h.svc.UpdateThreshold(req.Threshold); err != nil {
+	if err := h.svc.UpdateThreshold(c.Request.Context(), req.Threshold); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

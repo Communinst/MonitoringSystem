@@ -1,10 +1,18 @@
 package repository
 
 import (
+	"context"
 	"fmt"
+	"time"
 
 	"github.com/Communinst/MonitoringSystem/internal/bpf"
+	"github.com/Communinst/MonitoringSystem/internal/domain"
 	"github.com/cilium/ebpf"
+)
+
+const (
+	passKey uint16 = 0
+	dropKey uint16 = 1
 )
 
 type bpfMetricsRepository struct {
@@ -17,26 +25,33 @@ func NewBpfMetricsRepository(maps *bpf.BpfMaps) BpfMetricsRepositoryIface {
 	}
 }
 
-func (r *bpfMetricsRepository) GetMetrics() (passed uint64, dropped uint64, err error) {
+func (r *bpfMetricsRepository) GetMetrics(ctx context.Context) (domain.BpfMetrics, error) {
+	_, cancel := context.WithTimeout(ctx, time.Second*10)
+	defer cancel()
+
 	perCPUValues := make([]uint64, ebpf.MustPossibleCPU())
 
-	keyPassed := uint32(0)
+	keyPassed := uint32(passKey)
 	if err := r.maps.MetricsMap.Lookup(&keyPassed, &perCPUValues); err != nil {
-		return 0, 0, fmt.Errorf("failed to lookup passed metrics (key 0): %w", err)
+		return domain.BpfMetrics{}, fmt.Errorf("failed to lookup passed metrics (key 0): %w", err)
 	}
 
+	var aggPassed, aggDropped uint64
 	for _, val := range perCPUValues {
-		passed += val
+		aggPassed += val
 	}
 
-	keyDropped := uint32(1)
+	keyDropped := uint32(dropKey)
 	if err := r.maps.MetricsMap.Lookup(&keyDropped, &perCPUValues); err != nil {
-		return 0, 0, fmt.Errorf("failed to lookup dropped metrics (key 1): %w", err)
+		return domain.BpfMetrics{}, fmt.Errorf("failed to lookup dropped metrics (key 1): %w", err)
 	}
 
 	for _, val := range perCPUValues {
-		dropped += val
+		aggDropped += val
 	}
 
-	return passed, dropped, nil
+	return domain.BpfMetrics{
+		Passed:  aggPassed,
+		Dropped: aggDropped,
+	}, nil
 }

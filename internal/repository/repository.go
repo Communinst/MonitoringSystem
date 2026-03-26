@@ -1,11 +1,17 @@
 package repository
 
+import (
+	"context"
+
+	"github.com/Communinst/MonitoringSystem/internal/domain"
+)
+
 type BpfConfigRepositoryIface interface {
-	UpdateThreshold(threshold uint32) error
+	UpdateThreshold(context.Context, uint32) error
 }
 
 type BpfMetricsRepositoryIface interface {
-	GetMetrics() (passed uint64, dropped uint64, err error)
+	GetMetrics(context.Context) (domain.BpfMetrics, error)
 }
 
 type DNSMonitorRepository struct {

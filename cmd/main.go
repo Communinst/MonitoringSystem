@@ -3,12 +3,17 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"net"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	bpfObj "github.com/Communinst/MonitoringSystem/internal/bpf"
 	"github.com/Communinst/MonitoringSystem/internal/config"
 	"github.com/Communinst/MonitoringSystem/internal/handler"
+	prom "github.com/Communinst/MonitoringSystem/internal/prometheus"
 	"github.com/Communinst/MonitoringSystem/internal/repository"
 	"github.com/Communinst/MonitoringSystem/internal/router"
 	"github.com/Communinst/MonitoringSystem/internal/server"
@@ -68,19 +73,38 @@ func main() {
 	metricsRepo := repository.NewBpfMetricsRepository(&objs.BpfMaps)
 
 	repository := repository.NewDNSMonitorRepository(confRepo, metricsRepo)
-	service := service.NewDNSMonitorService(repository, reg)
+	service := service.NewDNSMonitorService(repository)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Запускаем сборщик метрик каждые 2 секунды
-	go service.Metrics.StartCollector(ctx, 2*time.Second)
+	// Создаём и регистрируем коллектор Prometheus
+	mappings := handler.NewMetricMappings()
+	collector := prom.NewPrometheusCollector(context.Background(), service.Metrics, mappings)
+	reg.MustRegister(collector)
 
 	handler := handler.NewDNSMonitorHandler(service, reg, 512)
 	router := router.NewRouter(handler)
 
-	server := server.NewServer(":8080", router.Init(), 10*time.Second, 10*time.Second)
-	server.Run()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	srvr := server.NewServer(":8080", router.Init(), 10*time.Second, 10*time.Second)
+	go func() {
+		if err := srvr.Run(); err != nil {
+			slog.Error("Server crash", "error", err)
+			stop() // Если сервер упал сам, отменяем общий контекст
+		}
+	}()
+
+	<-ctx.Done()
+	slog.Info("Shutdown signal received")
+
+	// 4. Даем 5 секунд на изящное завершение
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := srvr.Shutdown(shutdownCtx); err != nil {
+		slog.Error("Forced shutdown", "error", err)
+	}
+
+	slog.Info("Application exited correctly")
 	// ---
 
 }

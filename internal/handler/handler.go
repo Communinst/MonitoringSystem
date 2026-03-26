@@ -14,9 +14,13 @@ type bpfMetricsHandlerIface interface {
 	Run(c *gin.Context)
 }
 
+type bpfPrometheusMetricsHandlerIface interface {
+	Handler() gin.HandlerFunc
+}
+
 type DNSMonitorHandler struct {
-	Conf    bpfConfigHandlerIface
-	Metrics bpfMetricsHandlerIface
+	Conf bpfConfigHandlerIface
+	Prom bpfPrometheusMetricsHandlerIface
 }
 
 func NewDNSMonitorHandler(
@@ -26,7 +30,7 @@ func NewDNSMonitorHandler(
 ) *DNSMonitorHandler {
 
 	return &DNSMonitorHandler{
-		Conf:    NewbpfConfigHandler(serv.Conf, reg, l),
-		Metrics: NewbpfMetricsHandler(reg),
+		Conf: NewbpfConfigHandler(serv.Conf, reg, l),
+		Prom: NewBpfPrometheusMetricsHandler(reg),
 	}
 }
