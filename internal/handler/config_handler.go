@@ -5,15 +5,25 @@ import (
 
 	"github.com/Communinst/MonitoringSystem/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type bpfConfigHandler struct {
-	svc service.BpfConfigServiceIface
+	svc             service.BpfConfigServiceIface
+	metricThreshold prometheus.Gauge
 }
 
-func NewbpfConfigHandler(svc service.BpfConfigServiceIface) *bpfConfigHandler {
+func NewbpfConfigHandler(svc service.BpfConfigServiceIface, reg *prometheus.Registry, l float64) *bpfConfigHandler {
+	gauge := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "dns_monitor_drop_threshold_bytes",
+		Help: "Current minimum size of DNS response to be dropped",
+	})
+	reg.MustRegister(gauge)
+	gauge.Set(l)
+
 	return &bpfConfigHandler{
-		svc: svc,
+		svc:             svc,
+		metricThreshold: gauge,
 	}
 }
 
@@ -34,6 +44,7 @@ func (h *bpfConfigHandler) UpdateThreshold(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	h.metricThreshold.Set(float64(req.Threshold))
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":   "Threshold successfully updated",

@@ -22,10 +22,11 @@ type DNSMonitorHandler struct {
 func NewDNSMonitorHandler(
 	serv *service.DNSMonitorService,
 	reg *prometheus.Registry,
+	l float64,
 ) *DNSMonitorHandler {
 
 	return &DNSMonitorHandler{
-		Conf:    NewbpfConfigHandler(serv.Conf),
+		Conf:    NewbpfConfigHandler(serv.Conf, reg, l),
 		Metrics: NewbpfMetricsHandler(reg),
 	}
 }

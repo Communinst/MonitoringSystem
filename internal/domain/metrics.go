@@ -1,6 +1,6 @@
 package domain
 
-type Metrics struct {
-	Pass uint64
-	Drop uint64
+type BpfMetrics struct {
+	Passed uint64
+	Droped uint64
 }

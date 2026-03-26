@@ -28,7 +28,7 @@ func NewDNSMonitorService(
 	reg *prometheus.Registry,
 ) *DNSMonitorService {
 	return &DNSMonitorService{
-		Conf:    NewbpfConfigService(repo.Conf, reg),
+		Conf:    NewbpfConfigService(repo.Conf),
 		Metrics: NewBpfMetricsService(repo.Metrics, reg), // Инициализируем сервис метрик
 	}
 }

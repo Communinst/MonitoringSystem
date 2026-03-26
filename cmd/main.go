@@ -76,7 +76,7 @@ func main() {
 	// Запускаем сборщик метрик каждые 2 секунды
 	go service.Metrics.StartCollector(ctx, 2*time.Second)
 
-	handler := handler.NewDNSMonitorHandler(service, reg)
+	handler := handler.NewDNSMonitorHandler(service, reg, 512)
 	router := router.NewRouter(handler)
 
 	server := server.NewServer(":8080", router.Init(), 10*time.Second, 10*time.Second)
