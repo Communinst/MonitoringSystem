@@ -11,7 +11,7 @@ import (
 
 type PrometheusCollector struct {
 	ctx      context.Context
-	mappings []domain.MetricMapping
+	mappings []domain.MetricMapping // Turn to map. 1 Metrics - 1 FQname
 	svc      service.BpfMetricsServiceIface
 }
 

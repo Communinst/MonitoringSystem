@@ -18,3 +18,8 @@ dig @8.8.8.8 google.com
 
 
 sudo bpftool map dump name metrics_map
+
+helm updgrade prom-stack prometheus-community/kube-prometheus-stack -n monitoring -f prom-values.yaml
+kubectl apply -f grafana-ingress.yaml
+
+kubectl rollout restart deployment/traefik -n kube-system

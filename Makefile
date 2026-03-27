@@ -22,6 +22,8 @@ config:
 deploy: config
 	@echo "==> Applying DaemonSet..."
 	kubectl apply -f daemonset.yaml
+	@echo "==> Applying Monitoring configuration..."
+	kubectl apply -f monitoring.yaml
 
 # Перезапуск DaemonSet (нужно, чтобы k8s подхватил обновленный :local образ)
 restart:
@@ -39,5 +41,6 @@ dev: build load config restart logs
 # Полная очистка
 clean:
 	kubectl delete -f daemonset.yaml --ignore-not-found
+	kubectl delete -f monitoring.yaml --ignore-not-found
 	kubectl delete configmap dns-monitor-cfg-hook -n $(NAMESPACE) --ignore-not-found
 	kubectl delete configmap dns-monitor-cfg -n $(NAMESPACE) --ignore-not-found

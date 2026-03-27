@@ -1,0 +1,20 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana-ingress
+  namespace: monitoring
+  annotations:
+    # Явно указываем Traefik в качестве обработчика
+    kubernetes.io/ingress.class: traefik
+spec:
+  rules:
+    - host: grafana.192.168.1.49.nip.io 
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: prom-stack-grafana # Имя сервиса, созданного Helm'ом
+                port:
+                  number: 80

@@ -1,0 +1,23 @@
+# prom-values.yaml
+defaultRules:
+  create: false # Отключаем сотни дефолтных правил для k8s, чтобы не грузить CPU/RAM
+alertmanager:
+  enabled: false # В рамках диплома алертинг вряд ли нужен
+grafana:
+  enabled: true
+  adminPassword: "admin"
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hosts:
+      - grafana.192.168.1.49.nip.io
+prometheus:
+  prometheusSpec:
+    retention: 2d # Храним метрики 2 дня
+    resources:
+      requests:
+        memory: 512Mi
+      limits:
+        memory: 1024Mi
+    # Важнейшая настройка: заставляем Prometheus искать ServiceMonitor во ВСЕХ неймспейсах
+    serviceMonitorSelectorNilUsesHelmValues: false

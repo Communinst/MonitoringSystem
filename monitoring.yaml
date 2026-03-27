@@ -1,0 +1,34 @@
+# monitoring.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dns-monitor-svc
+  namespace: kube-system # Тот же неймспейс, где лежит твой DaemonSet
+  labels:
+    app: dns-monitor
+spec:
+  type: ClusterIP
+  selector:
+    app: dns-monitor # Должно совпадать с лейблами в твоем daemonset.yaml
+  ports:
+    - name: metrics
+      port: 8080       # Порт, на котором работает твой HTTP сервер /metrics в Go
+      targetPort: 8080 
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: dns-monitor-sm
+  namespace: kube-system
+  labels:
+    # Этот лейбл критически важен. Helm чарт по умолчанию ищет ServiceMonitor'ы с release=prom-stack
+    release: prom-stack 
+spec:
+  selector:
+    matchLabels:
+      app: dns-monitor # Ссылаемся на Service выше
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 5s # Частота скрейпинга (5 секунд для диплома/разработки - отлично, видно динамику)
