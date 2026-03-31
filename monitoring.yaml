@@ -10,10 +10,10 @@ metadata:
 spec:
   type: ClusterIP
   selector:
-    app: dns-monitor # Должно совпадать с лейблами в твоем daemonset.yaml
+    app: dns-monitor
   ports:
     - name: metrics
-      port: 8080       # Порт, на котором работает твой HTTP сервер /metrics в Go
+      port: 8080      
       targetPort: 8080 
 ---
 apiVersion: monitoring.coreos.com/v1
@@ -22,7 +22,6 @@ metadata:
   name: dns-monitor-sm
   namespace: kube-system
   labels:
-    # Этот лейбл критически важен. Helm чарт по умолчанию ищет ServiceMonitor'ы с release=prom-stack
     release: prom-stack 
 spec:
   selector:

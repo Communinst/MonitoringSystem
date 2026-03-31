@@ -1,18 +1,18 @@
 # Переменные
-IMAGE_NAME := dns-monitor:local
+IMAGE_NAME := privatej0ker/dns-monitor:latest
 NAMESPACE := kube-system
 DS_NAME := dns-monitor
 APP_LABEL := app=dns-monitor
 
-.PHONY: build load config deploy restart logs dev clean
+.PHONY: build push config deploy restart logs dev clean
 
 build:
 	@echo "==> Building Docker image..."
 	docker build -t $(IMAGE_NAME) .
 
-load:
-	@echo "==> Loading image into k3s..."
-	docker save $(IMAGE_NAME) | sudo k3s ctr images import -
+push: build
+	@echo "==> Pushing to Docker Hub..."
+	docker push $(IMAGE_NAME)
 
 config:
 	@echo "==> Applying ConfigMaps..."
@@ -20,23 +20,22 @@ config:
 	kubectl create configmap dns-monitor-cfg -n $(NAMESPACE) --from-env-file=cmd/.env --dry-run=client -o yaml | kubectl apply -f -
 
 deploy: config
-	@echo "==> Applying DaemonSet..."
+	@echo "==> Applying DaemonSet and Monitoring..."
 	kubectl apply -f daemonset.yaml
-	@echo "==> Applying Monitoring configuration..."
 	kubectl apply -f monitoring.yaml
 
-# Перезапуск DaemonSet (нужно, чтобы k8s подхватил обновленный :local образ)
 restart:
 	@echo "==> Restarting DaemonSet..."
 	kubectl rollout restart daemonset/$(DS_NAME) -n $(NAMESPACE)
-	kubectl rollout status daemonset/$(DS_NAME) -n $(NAMESPACE)
+	kubectl rollout status daemonset/$(DS_NAME) -n $(NAMESPACE) --timeout=10s || echo "Rollout timed out, but continuing..."
+
 
 logs:
-	@echo "==> Tailing logs..."
-	kubectl logs -f ds/$(DS_NAME) -n $(NAMESPACE)
+	@echo "==> Tailing logs with Stern..."
+	stern -n $(NAMESPACE) -l $(APP_LABEL) --tail 50
 
-# --- ГЛАВНАЯ КОМАНДА ДЛЯ РАЗРАБОТКИ ---
-dev: build load config restart logs
+
+dev: push deploy restart logs
 
 # Полная очистка
 clean:
@@ -44,3 +43,7 @@ clean:
 	kubectl delete -f monitoring.yaml --ignore-not-found
 	kubectl delete configmap dns-monitor-cfg-hook -n $(NAMESPACE) --ignore-not-found
 	kubectl delete configmap dns-monitor-cfg -n $(NAMESPACE) --ignore-not-found
+	@echo "==> Waiting 10 seconds for healthy pods to detach XDP hooks..."
+	@sleep 10
+	@echo "==> Forcibly cleaning up remaining ghost pods on dead nodes..."
+	kubectl delete pods -l $(APP_LABEL) -n $(NAMESPACE) --force --grace-period=0 2>/dev/null || true

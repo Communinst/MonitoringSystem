@@ -23,3 +23,5 @@ helm updgrade prom-stack prometheus-community/kube-prometheus-stack -n monitorin
 kubectl apply -f grafana-ingress.yaml
 
 kubectl rollout restart deployment/traefik -n kube-system
+
+

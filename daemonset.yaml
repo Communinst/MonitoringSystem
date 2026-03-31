@@ -6,6 +6,10 @@ metadata:
   labels:
     app: dns-monitor
 spec:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: dns-monitor
@@ -19,15 +23,18 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
       containers:
       - name: ebpfdns
-        image: dns-monitor:local
-        # КРИТИЧНО 2: Запрещаем K8s лезть в интернет за образом, используем собранный локально
-        imagePullPolicy: Never
+        image: privatej0ker/dns-monitor:latest
+        imagePullPolicy: Always
         # env:
         # - name: "HookIfaceName"
         #   value: "enp0s3" # Передаем имя интерфейса в Go-код
         securityContext:
-          # КРИТИЧНО 3: Даем права на загрузку eBPF программ в ядро
-          privileged: true
+          capabilities:
+            add:
+              - BPF             # Для загрузки eBPF
+              - PERFMON         # Для чтения трейспоинтов
+              - NET_ADMIN       # Для XDP / TC
+              - SYS_RESOURCE    # Для управления памятью (memlock) для bpf мап
         envFrom:
         - configMapRef:
             name: dns-monitor-cfg
