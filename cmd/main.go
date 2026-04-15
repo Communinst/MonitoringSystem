@@ -22,11 +22,7 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 
-	_ "github.com/lpernett/godotenv"
 	"github.com/prometheus/client_golang/prometheus"
-	_ "github.com/prometheus/client_golang/prometheus"
-	_ "github.com/prometheus/client_golang/prometheus/promauto"
-	_ "github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {

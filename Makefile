@@ -4,7 +4,27 @@ NAMESPACE := kube-system
 DS_NAME := dns-monitor
 APP_LABEL := app=dns-monitor
 
-.PHONY: build push config deploy restart logs dev clean
+export KUBECONFIG := $(HOME)/.kube/config
+
+
+# Компиляция BPF C-кода и генерация Go-обёрток через bpf2go.
+# bpf2go сам вызывает clang с флагами из //go:generate директивы.
+# Требуется clang на хосте. Пути в //go:generate относительные, поэтому cd.
+.PHONY: bpf-generate install-tools build push config deploy restart logs dev clean
+
+bpf-generate:
+	@echo "==> Compiling BPF program and generating Go bindings..."
+	cd internal/bpf && go generate
+
+install-tools:
+	@if command -v stern >/dev/null 2>&1; then \
+		echo "==> stern is already installed. Skipping."; \
+	else \
+		echo "==> Installing stern..."; \
+		wget -qO- https://github.com/stern/stern/releases/download/v1.30.0/stern_1.30.0_linux_amd64.tar.gz | tar xvz stern; \
+		sudo mv stern /usr/local/bin/; \
+		echo "==> stern installed successfully."; \
+	fi
 
 build:
 	@echo "==> Building Docker image..."
@@ -23,12 +43,18 @@ deploy: config
 	@echo "==> Applying DaemonSet and Monitoring..."
 	kubectl apply -f daemonset.yaml
 	kubectl apply -f monitoring.yaml
+	helm upgrade prom-stack prometheus-community/kube-prometheus-stack -n monitoring -f prom-values.yaml
 
 restart:
 	@echo "==> Restarting DaemonSet..."
 	kubectl rollout restart daemonset/$(DS_NAME) -n $(NAMESPACE)
-	kubectl rollout status daemonset/$(DS_NAME) -n $(NAMESPACE) --timeout=10s || echo "Rollout timed out, but continuing..."
+	@# Fallback намеренный: rollout status ждёт ВСЕ ноды, включая NotReady/мёртвые.
+	@# Если хотя бы один живой узел обновился — считаем перезапуск успешным.
+	-kubectl rollout status daemonset/$(DS_NAME) -n $(NAMESPACE) --timeout=120s
 
+wait-restart:
+	@echo "==> Waiting for fresh DaemonSet rollout..."
+	-kubectl rollout status daemonset/$(DS_NAME) -n $(NAMESPACE) --timeout=120s || true
 
 logs:
 	@echo "==> Tailing logs with Stern..."
@@ -36,6 +62,8 @@ logs:
 
 
 dev: push deploy restart logs
+dev-force: push clean deploy restart logs
+dev-test: push clean deploy wait-restart logs
 
 # Полная очистка
 clean:

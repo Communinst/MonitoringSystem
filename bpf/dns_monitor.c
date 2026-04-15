@@ -26,6 +26,11 @@ struct {
     __type(value, __u64); // Счетчик пакетов
 } metrics_map SEC(".maps");
 
+// struct {
+//     __uint(type, BPF_MAP_TYPE_LRU_PERCPU_HASH);
+//     __uint(max_entries, )
+// }
+
 static __always_inline void increment_metric(__u32 index) {
     __u64 *value = bpf_map_lookup_elem(&metrics_map, &index);
     if (value) {

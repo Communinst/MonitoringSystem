@@ -1,4 +1,3 @@
-# monitoring.yaml
 ---
 apiVersion: v1
 kind: Service
@@ -24,10 +23,11 @@ metadata:
   labels:
     release: prom-stack 
 spec:
+  jobLabel: app
   selector:
     matchLabels:
       app: dns-monitor # Ссылаемся на Service выше
   endpoints:
     - port: metrics
       path: /metrics
-      interval: 5s # Частота скрейпинга (5 секунд для диплома/разработки - отлично, видно динамику)
+      interval: 15s # Частота скрейпинга (5 секунд для диплома/разработки - отлично, видно динамику)
