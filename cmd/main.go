@@ -25,11 +25,16 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-func main() {
+const (
+	configMapKey uint32 = 0
+)
 
+func main() {
+	// prepare sygnal context
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	//
 	objs, err := bootBPF()
 	if err != nil {
 		slog.Error("Failed to boot BPF", "error", err)
@@ -37,6 +42,7 @@ func main() {
 	}
 	defer objs.Close()
 
+	// Supports both - k8s and local deployment
 	_ = config.LoadAllEnv()
 	cfg, err := config.LoadNewBootCfg()
 	if err != nil {
@@ -44,13 +50,15 @@ func main() {
 		return
 	}
 
-	ifaceName := cfg.IfaceHookPoint.XDPIfaceName
+	// specify hook. High probability of rewriting
+	ifaceName := cfg.BPF.XDPIfaceName
 	iface, err := net.InterfaceByName(ifaceName)
 	if err != nil {
 		slog.Error("Failed to find interface", "interface", ifaceName, "error", err)
 		return
 	}
 
+	// target specific hook. High probability of rewriting
 	l, err := link.AttachXDP(link.XDPOptions{
 		Program:   objs.XdpWatch,
 		Interface: iface.Index,
@@ -60,34 +68,20 @@ func main() {
 		return
 	}
 	defer l.Close()
-	slog.Info("Successfully attached XDP program", "interface", ifaceName)
 
-	configKey := uint32(0)
-	maxDnsSize := uint32(512) // test
-
-	if err := objs.ConfigMap.Update(&configKey, &maxDnsSize, 0); err != nil {
+	// Set max DNS response size in config map. High probability of rewriting
+	maxDnsSize := uint32(cfg.BPF.MaxDnsSize)
+	if err := objs.ConfigMap.Update(configMapKey, &maxDnsSize, 0); err != nil {
 		slog.Error("Failed to update config_map", "error", err)
 		return
 	}
 	slog.Info("Set max DNS response size", "bytes", maxDnsSize)
 
-	// -------------------------
-	reg := prometheus.NewRegistry()
-	confRepo := repository.NewbpfConfigRepository(&objs.BpfMaps)
-	metricsRepo := repository.NewBpfMetricsRepository(&objs.BpfMaps)
+	// Setup layers and router. High probability of rewriting
+	router := setupLayers(&objs.BpfMaps)
 
-	repository := repository.NewDNSMonitorRepository(confRepo, metricsRepo)
-	service := service.NewDNSMonitorService(repository)
-
-	// Создаём и регистрируем коллектор Prometheus
-	mappings := handler.NewMetricMappings()
-	collector := prom.NewPrometheusCollector(context.Background(), service.Metrics, mappings)
-	reg.MustRegister(collector)
-
-	handler := handler.NewDNSMonitorHandler(service, reg, 512)
-	router := router.NewRouter(handler)
-
-	srvr := server.NewServer(":8080", router.Init(), 10*time.Second, 10*time.Second)
+	// Http server setup with graceful shutdown. High probability of rewriting
+	srvr := server.NewServer(cfg.HTTPServer.Address, router.Init(), 10*time.Second, 10*time.Second)
 	go func() {
 		if err := srvr.Run(); err != nil {
 			if err != http.ErrServerClosed {
@@ -100,7 +94,7 @@ func main() {
 	<-ctx.Done()
 	slog.Info("Shutdown signal received, initiating graceful shutdown...")
 
-	// 4. Даем 5 секунд на изящное завершение
+	// Graceful shutdown mechanism. High probability of rewriting
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -109,8 +103,23 @@ func main() {
 	}
 
 	slog.Info("Application exited correctly")
-	// ---
+}
 
+func setupLayers(b *bpfObj.BpfMaps) *router.Router {
+	metricsRepo := repository.NewBpfMetricsRepository(b)
+	repository := repository.NewDNSMonitorRepository(metricsRepo)
+	service := service.NewDNSMonitorService(repository)
+	reg := prometheusSetup(service)
+	handler := handler.NewDNSMonitorHandler(service, reg)
+	return router.NewRouter(handler)
+}
+
+func prometheusSetup(svc *service.DNSMonitorService) *prometheus.Registry {
+	mappings := handler.NewMetricMappings()
+	collector := prom.NewPrometheusCollector(context.Background(), svc.Metrics, mappings)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(collector)
+	return reg
 }
 
 func bootBPF() (bpfObj.BpfObjects, error) {

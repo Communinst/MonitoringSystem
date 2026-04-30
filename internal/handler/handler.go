@@ -6,10 +6,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-type bpfConfigHandlerIface interface {
-	UpdateThreshold(c *gin.Context)
-}
-
 type bpfMetricsHandlerIface interface {
 	Run(c *gin.Context)
 }
@@ -19,18 +15,15 @@ type bpfPrometheusMetricsHandlerIface interface {
 }
 
 type DNSMonitorHandler struct {
-	Conf bpfConfigHandlerIface
 	Prom bpfPrometheusMetricsHandlerIface
 }
 
 func NewDNSMonitorHandler(
 	serv *service.DNSMonitorService,
 	reg *prometheus.Registry,
-	l float64,
 ) *DNSMonitorHandler {
 
 	return &DNSMonitorHandler{
-		Conf: NewbpfConfigHandler(serv.Conf, reg, l),
 		Prom: NewBpfPrometheusMetricsHandler(reg),
 	}
 }

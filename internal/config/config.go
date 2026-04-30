@@ -9,8 +9,9 @@ import (
 )
 
 type BootCfg struct {
-	IfaceHookPoint struct {
+	BPF struct {
 		XDPIfaceName string `env:"XDP_IFACE_NAME" env-default:"enp0s3"`
+		MaxDnsSize   uint32 `env:"MAX_DNS_SIZE" env-default:"512"`
 	}
 	HTTPServer struct {
 		Address string        `env:"HTTP_ADDRESS" env-default:"localhost:8080"`

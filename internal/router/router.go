@@ -22,10 +22,5 @@ func (r *Router) Init() *gin.Engine {
 
 	// Swagger documentation route
 	//router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
-
-	api := router.Group("/api/v1")
-	{
-		api.POST("/threshold", r.handler.Conf.UpdateThreshold)
-	}
 	return router
 }
