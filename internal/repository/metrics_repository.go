@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/Communinst/MonitoringSystem/internal/bpf"
 	"github.com/Communinst/MonitoringSystem/internal/domain"
@@ -11,8 +10,9 @@ import (
 )
 
 const (
-	passKey uint16 = 0
-	dropKey uint16 = 1
+	passKey uint32 = iota
+	dropKey
+	NXDomainKey
 )
 
 type bpfMetricsRepository struct {
@@ -26,32 +26,60 @@ func NewBpfMetricsRepository(maps *bpf.BpfMaps) BpfMetricsRepositoryIface {
 }
 
 func (r *bpfMetricsRepository) GetMetrics(ctx context.Context) (domain.BpfMetrics, error) {
-	_, cancel := context.WithTimeout(ctx, time.Second*10)
-	defer cancel()
-
-	perCPUValues := make([]uint64, ebpf.MustPossibleCPU())
-
-	keyPassed := uint32(passKey)
-	if err := r.maps.MetricsMap.Lookup(&keyPassed, &perCPUValues); err != nil {
-		return domain.BpfMetrics{}, fmt.Errorf("failed to lookup passed metrics (key 0): %w", err)
+	aggPassed, err := getPassed(r)
+	if err != nil {
+		return domain.BpfMetrics{}, err
 	}
 
-	var aggPassed, aggDropped uint64
-	for _, val := range perCPUValues {
-		aggPassed += val
+	aggDropped, err := getDropped(r)
+	if err != nil {
+		return domain.BpfMetrics{}, err
 	}
 
-	keyDropped := uint32(dropKey)
-	if err := r.maps.MetricsMap.Lookup(&keyDropped, &perCPUValues); err != nil {
-		return domain.BpfMetrics{}, fmt.Errorf("failed to lookup dropped metrics (key 1): %w", err)
-	}
-
-	for _, val := range perCPUValues {
-		aggDropped += val
+	aggNXDomain, err := getNXDomain(r)
+	if err != nil {
+		return domain.BpfMetrics{}, err
 	}
 
 	return domain.BpfMetrics{
-		Passed:  aggPassed,
-		Dropped: aggDropped,
+		Passed:   aggPassed,
+		Dropped:  aggDropped,
+		NXDomain: aggNXDomain,
 	}, nil
+}
+
+func getPassed(r *bpfMetricsRepository) (uint64, error) {
+	perCPUValues := make([]uint64, ebpf.MustPossibleCPU())
+	if err := r.maps.MetricsMap.Lookup(passKey, &perCPUValues); err != nil {
+		return 0, fmt.Errorf("failed to lookup passed metrics (key 0): %w", err)
+	}
+	var aggPassed uint64
+	for _, val := range perCPUValues {
+		aggPassed += val
+	}
+	return aggPassed, nil
+}
+
+func getDropped(r *bpfMetricsRepository) (uint64, error) {
+	perCPUValues := make([]uint64, ebpf.MustPossibleCPU())
+	if err := r.maps.MetricsMap.Lookup(dropKey, &perCPUValues); err != nil {
+		return 0, fmt.Errorf("failed to lookup dropped metrics (key 1): %w", err)
+	}
+	var aggDropped uint64
+	for _, val := range perCPUValues {
+		aggDropped += val
+	}
+	return aggDropped, nil
+}
+
+func getNXDomain(r *bpfMetricsRepository) (uint64, error) {
+	perCPUValues := make([]uint64, ebpf.MustPossibleCPU())
+	if err := r.maps.MetricsMap.Lookup(NXDomainKey, &perCPUValues); err != nil {
+		return 0, fmt.Errorf("failed to lookup NXDomain metrics (key 2): %w", err)
+	}
+	var aggNXDomain uint64
+	for _, val := range perCPUValues {
+		aggNXDomain += val
+	}
+	return aggNXDomain, nil
 }

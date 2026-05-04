@@ -41,6 +41,7 @@ func NewMetricMappings() []domain.MetricMapping {
 				return []domain.MetricPoint{
 					{Value: float64(m.Passed), Labels: []string{"passed"}},
 					{Value: float64(m.Dropped), Labels: []string{"dropped"}},
+					{Value: float64(m.NXDomain), Labels: []string{"nxdomain"}},
 				}
 			},
 		},

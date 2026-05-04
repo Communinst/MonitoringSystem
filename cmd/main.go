@@ -30,7 +30,12 @@ const (
 )
 
 func main() {
-	// prepare sygnal context
+	// Excessive if Kernel 5.11+ used, but still's a good practice.
+	if err := rlimit.RemoveMemlock(); err != nil {
+		log.Printf("Failed to remove memlock: %v", err)
+	}
+
+	// prepare signal context
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -42,7 +47,7 @@ func main() {
 	}
 	defer objs.Close()
 
-	// Supports both - k8s and local deployment
+	// Supports both - orchestrated and local deployment
 	_ = config.LoadAllEnv()
 	cfg, err := config.LoadNewBootCfg()
 	if err != nil {
@@ -50,7 +55,7 @@ func main() {
 		return
 	}
 
-	// specify hook. High probability of rewriting
+	// Specify hook. High probability of rewriting
 	ifaceName := cfg.BPF.XDPIfaceName
 	iface, err := net.InterfaceByName(ifaceName)
 	if err != nil {
@@ -77,8 +82,8 @@ func main() {
 	}
 	slog.Info("Set max DNS response size", "bytes", maxDnsSize)
 
-	// Setup layers and router. High probability of rewriting
-	router := setupLayers(&objs.BpfMaps)
+	//
+	router := router.NewRouter(setupLayers(&objs.BpfMaps))
 
 	// Http server setup with graceful shutdown. High probability of rewriting
 	srvr := server.NewServer(cfg.HTTPServer.Address, router.Init(), 10*time.Second, 10*time.Second)
@@ -105,13 +110,12 @@ func main() {
 	slog.Info("Application exited correctly")
 }
 
-func setupLayers(b *bpfObj.BpfMaps) *router.Router {
+func setupLayers(b *bpfObj.BpfMaps) *handler.DNSMonitorHandler {
 	metricsRepo := repository.NewBpfMetricsRepository(b)
-	repository := repository.NewDNSMonitorRepository(metricsRepo)
-	service := service.NewDNSMonitorService(repository)
-	reg := prometheusSetup(service)
-	handler := handler.NewDNSMonitorHandler(service, reg)
-	return router.NewRouter(handler)
+	repo := repository.NewDNSMonitorRepository(metricsRepo)
+	serv := service.NewDNSMonitorService(repo)
+	reg := prometheusSetup(serv)
+	return handler.NewDNSMonitorHandler(serv, reg)
 }
 
 func prometheusSetup(svc *service.DNSMonitorService) *prometheus.Registry {
@@ -123,10 +127,6 @@ func prometheusSetup(svc *service.DNSMonitorService) *prometheus.Registry {
 }
 
 func bootBPF() (bpfObj.BpfObjects, error) {
-	if err := rlimit.RemoveMemlock(); err != nil {
-		log.Printf("Failed to remove memlock: %v", err)
-		return bpfObj.BpfObjects{}, err
-	}
 
 	var objs bpfObj.BpfObjects
 	if err := bpfObj.LoadBpfObjects(&objs, nil); err != nil {

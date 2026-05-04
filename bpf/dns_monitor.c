@@ -6,10 +6,25 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 
-enum
+enum is_DNS 
 {
+    CORRUPTED = -1,
+    DNS_NO = 0,
+    DNS_YES = 1,
+};
+
+enum dns_packet_type
+{
+    DNS_UNKNOWN = -1,
     DNS_QUERY = 0,
-    DNS_RESPONSE = 1,
+    DNS_RESPONSE_OK = 1,
+    DNS_RESPONSE_NXDOMAIN = 2,
+    DNS_RESPONSE_OTHER = 3,
+};
+
+enum ip_frag {
+    FRAG_SUBSEQUENT = -2, 
+    FRAG_HEAD = 0,
 };
 
 struct {
@@ -21,10 +36,19 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, 2); // Индекс 0: пропущено, Индекс 1: дропнуто
+    __uint(max_entries, 3); // 0: passed, 1: dropped, 2: NXDOMAIN;
     __type(key, __u32);
     __type(value, __u64); // Счетчик пакетов
 } metrics_map SEC(".maps");
+
+struct dnshdr {
+    __u16 id;
+    __u16 flags;
+    __u16 qdcount;
+    __u16 ancount;
+    __u16 nscount;
+    __u16 arcount;
+};
 
 // struct {
 //     __uint(type, BPF_MAP_TYPE_LRU_PERCPU_HASH);
@@ -81,27 +105,83 @@ static __always_inline int parse_ip_v4 (void **cursor, void const *end) {
     struct iphdr *ip = *cursor;
 
     if ((void*)(ip + 1) > end) {
-        return -1;
+        return CORRUPTED;
     }  
     if (ip->version != 4) {
-        return -1;
+        return CORRUPTED;
     } 
     int hdr_len = ip->ihl * 4; // Since IP packet's ihl field expressed in 32-bit words
     if (hdr_len < 20) {
-        return -1;
+        return CORRUPTED;
     }
     
-    void *buf_cursor = *cursor + hdr_len;
+    // Check if this is a fragment (and NOT the first fragment)
+    // frag_off & IP_OFFSET (0x1FFF)
+    __u16 frag_off = bpf_ntohs(ip->frag_off);
+    if ((frag_off & 0x1FFF) != 0) {
+        return FRAG_SUBSEQUENT; // Subsequent fragment
+    }
+
+    void *buf_cursor = (__u8 *)*cursor + hdr_len;
     *cursor = buf_cursor;
 
     return ip->protocol;
+}
+
+static __always_inline int parse_ip_v6(void **cursor, void const *end) {
+    struct ipv6hdr *ipv6 = *cursor;
+
+    if ((void*)(ipv6 + 1) > end) {
+        return CORRUPTED;
+    }  
+    if (ipv6->version != 6) {
+        return CORRUPTED;
+    } 
+    
+    int nexthdr = ipv6->nexthdr;
+    void *buf_cursor = (void *)(ipv6 + 1);
+
+    #pragma unroll
+    for (int i = 0; i < 4; i++) {
+        if (nexthdr == 44) { // NEXTHDR_FRAGMENT
+            struct frag_hdr *frag = buf_cursor;
+            if ((void*)(frag + 1) > end) {
+                return CORRUPTED;
+            }
+            
+            __u16 frag_off = bpf_ntohs(frag->frag_off);
+            // Fragment offset is in bits 3-15 (mask 0xFFF8)
+            if ((frag_off & 0xFFF8) != 0) {
+                return FRAG_SUBSEQUENT; // Subsequent fragment
+            }
+            
+            nexthdr = frag->nexthdr;
+            buf_cursor = (void *)(frag + 1);
+        } else if (nexthdr == 0 || nexthdr == 43 || nexthdr == 60) { 
+            // NEXTHDR_HOP (0), NEXTHDR_ROUTING (43), NEXTHDR_DEST (60)
+            struct { __u8 next; __u8 len; } *ext = buf_cursor;
+            if ((void*)(ext + 1) > end) {
+                return CORRUPTED;
+            }
+            nexthdr = ext->next;
+            buf_cursor += (ext->len + 1) * 8;
+            if (buf_cursor > end) {
+                return CORRUPTED;
+            }
+        } else {
+            break;
+        }
+    }
+
+    *cursor = buf_cursor;
+    return nexthdr;
 }
 
 static __always_inline int parse_udp_for_dns(void **cursor, void *end, __u16 *udp_payload_len) {
     struct udphdr *udp = *cursor;
 
     if ((void*)(udp + 1) > end) {
-        return -1;
+        return DNS_NO;
     }
 
     int src_port = bpf_ntohs(udp->source);
@@ -116,14 +196,73 @@ static __always_inline int parse_udp_for_dns(void **cursor, void *end, __u16 *ud
 
     *cursor = (void *)(udp + 1);
 
-    if (src_port == 53) {
-        return DNS_RESPONSE;
-    } 
-    else if (dest_port == 53){
+    if (src_port == 53 || dest_port == 53) {
+        return DNS_YES;
+    }
+
+    return DNS_NO;
+}
+
+static __always_inline int parse_tcp_for_dns(void **cursor, void *end, __u16 *payload_len) {
+    struct tcphdr *tcp = *cursor;
+
+    if ((void*)(tcp + 1) > end) {
+        return DNS_NO;
+    }
+
+    int src_port = bpf_ntohs(tcp->source);
+    int dest_port = bpf_ntohs(tcp->dest);
+    
+    int tcp_hdr_len = tcp->doff * 4;
+    if (tcp_hdr_len < sizeof(struct tcphdr)) {
+        return DNS_NO;
+    }
+
+    void *buf_cursor = *cursor + tcp_hdr_len;
+    if (buf_cursor > end) {
+        return DNS_NO;
+    }
+
+    *cursor = buf_cursor;
+
+    if (src_port == 53 || dest_port == 53) {
+        // TCP DNS messages have a 2-byte length prefix
+        __be16 *len_ptr = *cursor;
+        if ((void*)(len_ptr + 1) > end) {
+            return DNS_UNKNOWN; 
+        }
+        *payload_len = bpf_ntohs(*len_ptr);
+        *cursor = (void *)(len_ptr + 1);
+
+        return DNS_YES;
+    }
+
+    return DNS_NO;
+}
+
+static __always_inline int parse_dns(void **cursor, void *end) {
+    struct dnshdr *dns = *cursor;
+    if ((void*)(dns + 1) > end) {
+        return DNS_UNKNOWN;
+    }
+
+    __u16 flags = bpf_ntohs(dns->flags);
+    int is_response = (flags >> 15) & 1;
+    int rcode = flags & 0x0F;
+
+    *cursor = (void*)(dns + 1);
+
+    if (!is_response) {
         return DNS_QUERY;
     }
 
-    return -1;
+    if (rcode == 3) {
+        return DNS_RESPONSE_NXDOMAIN;
+    } else if (rcode == 0) {
+        return DNS_RESPONSE_OK;
+    }
+    
+    return DNS_RESPONSE_OTHER;
 }
 
 SEC("xdp")
@@ -133,36 +272,65 @@ int xdp_watch(struct xdp_md *ctx) { // Supports VLANs and default eth frame
     void *frame_end = (void *)(long)ctx->data_end;
 
     int ip_type = parse_eth(&cursor, frame_end);
-    // IPv4
-    if (ip_type != ETH_P_IP) {
+
+    // IPv4 or IPv6
+    int l4_proto = -1;
+    if (ip_type == ETH_P_IP) {
+        l4_proto = parse_ip_v4(&cursor, frame_end);
+    } 
+    else if (ip_type == ETH_P_IPV6) {
+        l4_proto = parse_ip_v6(&cursor, frame_end);
+    } 
+    else {
+        return XDP_PASS;
+    }
+    // Handling subsequent fragments in XDP is extremely difficult, 
+    // so pass them. Anyway they can't contain DNS header, so we won't lose 
+    // any important information for XDP monitoring.
+    if (l4_proto < FRAG_HEAD) {
         return XDP_PASS;
     }
     
-    int udp_proto = parse_ip_v4(&cursor, frame_end);
-    // Only UDP accepted
-    if (udp_proto != IPPROTO_UDP) { 
+    // Only UDP and TCP accepted.
+    __u16 payload_len = 0;
+    int is_dns = DNS_NO;
+    
+    if (l4_proto == IPPROTO_UDP) {
+        is_dns = parse_udp_for_dns(&cursor, frame_end, &payload_len);
+    } 
+    else if (l4_proto == IPPROTO_TCP) {
+        is_dns = parse_tcp_for_dns(&cursor, frame_end, &payload_len);
+    } 
+    else {
         return XDP_PASS;
     }
 
-    __u16 udp_payload_len = 0;
-    int dns_type = parse_udp_for_dns(&cursor, frame_end, &udp_payload_len);
-
-    // Pass everything different from DNS
-    if (dns_type < 0) {
+    // Dissect only DNS packets, pass the rest
+    if (is_dns != DNS_YES) {
         return XDP_PASS;
     }
+
+    int dns_type = parse_dns(&cursor, frame_end);
+    if (dns_type == DNS_UNKNOWN) {
+        return XDP_PASS;
+    }
+    
     if (dns_type == DNS_QUERY) {
-        
+        increment_metric(0);
         return XDP_PASS;
     }
-    else if (dns_type == DNS_RESPONSE) {
+    else if (dns_type == DNS_RESPONSE_OK || dns_type == DNS_RESPONSE_NXDOMAIN || dns_type == DNS_RESPONSE_OTHER) {
         __u32 key = 0;
         __u32 *max_size = bpf_map_lookup_elem(&config_map, &key);
         
         // Amplification protection
-        if (max_size && udp_payload_len > *max_size) {
+        if (max_size && payload_len > *max_size) {
             increment_metric(1); 
             return XDP_DROP;
+        }
+        
+        if (dns_type == DNS_RESPONSE_NXDOMAIN) {
+            increment_metric(2);
         }
     }
 

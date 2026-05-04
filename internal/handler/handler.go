@@ -6,10 +6,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-type bpfMetricsHandlerIface interface {
-	Run(c *gin.Context)
-}
-
 type bpfPrometheusMetricsHandlerIface interface {
 	Handler() gin.HandlerFunc
 }
