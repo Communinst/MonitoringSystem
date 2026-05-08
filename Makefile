@@ -59,6 +59,9 @@ logs:
 	@echo "==> Tailing logs with Stern..."
 	stern -n $(NAMESPACE) -l $(APP_LABEL) --tail 50
 
+run-local: bpf-generate
+	go build -o bin/dns-monitor ./cmd
+	sudo ./bin/dns-monitor
 
 dev: push deploy restart logs
 dev-force: bpf-generate push clean deploy restart logs

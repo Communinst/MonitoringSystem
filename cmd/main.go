@@ -134,7 +134,7 @@ func bootBPF() (bpfObj.BpfObjects, error) {
 	var objs bpfObj.BpfObjects
 	if err := bpfObj.LoadBpfObjects(&objs, &ebpf.CollectionOptions{
 		Programs: ebpf.ProgramOptions{
-			LogSizeStart: 1024 * 1024 * 10, // 5 MB для логов верификатора
+			LogSizeStart: 1024 * 1024 * 2, // 5 MB для логов верификатора
 			LogLevel:     ebpf.LogLevelInstruction | ebpf.LogLevelBranch,
 		},
 	}); err != nil {

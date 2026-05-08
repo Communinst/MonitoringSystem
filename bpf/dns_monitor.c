@@ -11,6 +11,9 @@
 #define MAX_LABEL_LEN 63 
 #define MAX_DNS_OFFSET 4096 
 
+
+char LICENSE[] SEC("license") = "GPL";
+
 enum is_DNS 
 {
     CORRUPTED = -1,
@@ -288,10 +291,30 @@ static __always_inline int parse_dns(void **cursor, void *end) {
 }
 
 
+static __always_inline int safe_copy(__u8 *dst_pos, __u8 *dst_end, 
+                                     __u8 *src, void *src_end, int len) {
+    if ((void*)(src + len) > src_end)
+    {
+        return -1;
+    }
+    if (dst_pos + len > dst_end)
+    {
+        return -1;
+    }
+    
+    if (bpf_probe_read_kernel(dst_pos, len, src) < 0) 
+    {
+        return -1;
+    }
 
-static __always_inline int read_label(struct dns_event *event, __u8 **cur, void **cursor, void *end, __u8 **crawler, __u8 *crawler_end) {
+    return 0;
+}
+
+static __always_inline int read_label(struct dns_event *event, __u8 **cur, 
+                                    void **cursor, void *end, 
+                                    __u8 **crawler, __u8 *crawler_end) {
     __u8 len = **cur;
-    if (len > MAX_LABEL_LEN) {
+    if (len == 0 || len > MAX_LABEL_LEN) {
         return LABEL_ERR;
     }
     ++(*cur);
@@ -305,13 +328,22 @@ static __always_inline int read_label(struct dns_event *event, __u8 **cur, void 
     if ((void*)(*cur + len) > end) {
         return LABEL_ERR;
     }
+
+    if (safe_copy(*crawler, crawler_end, *cur, end, len) < 0) {
+        return LABEL_ERR;
+    }
+
     *cur += len;
-    *crawler += len;
+    
+    //*crawler += len;
     return LABEL_OK;
 }
 
 // RFC1035 
 static __always_inline void parse_domain(void *start, void **cursor, void *end, int dns_type) {
+    // if (MAX_QNAME_LEN > sizeof(struct dns_event)) {
+    //     return;
+    // }
     struct dns_event *event = bpf_ringbuf_reserve(&events_ringbuf, sizeof(struct dns_event), 0);
     if (!event) {
         return;
@@ -384,6 +416,143 @@ static __always_inline void parse_domain(void *start, void **cursor, void *end, 
     return;
 }
 
+
+// static __always_inline int safe_copy(struct dns_event *event, 
+//                                      __u32 dst_idx, __u32 dst_max,
+//                                      __u8 *src, void *src_end, __u32 len) {
+
+//     if ((void*)(src + len) > src_end)
+//     {
+//         return -1;
+//     }
+   
+//     if (dst_idx + len > dst_max)
+//     {
+//         return -1;
+//     }
+//     __u32 max_len = dst_max - dst_idx;
+//     if (len > max_len)
+//         len = max_len;
+    
+//     __u8 *dst = event->qname + dst_idx;
+//     if (bpf_probe_read_kernel(dst, len, src) < 0)
+//     {
+//         return -1;
+//     }
+        
+    
+//     return 0;
+// }
+
+// struct read_label_response {
+//     int status;
+//     __u8 *new_cursor;
+//     __u8 *new_crawler;
+// };
+
+// static __always_inline int read_label(struct dns_event *event, __u8 **cur, 
+//                                     void **cursor, void *end) {
+//     __u8 len = **cur;
+//     if (len == 0 || len > MAX_LABEL_LEN) {
+//         return LABEL_ERR;
+//     }
+//     ++(*cur);
+//     __u32 qname_len = event->qname_len;
+//     ++qname_len;
+
+//     __u32 idx = qname_len - 1;
+
+//     if (idx >= MAX_QNAME_LEN) { 
+//         return LABEL_ERR;
+//     }
+//     event->qname[idx] = '.';
+//     ++idx;
+
+//     if ((void*)(*cur + len) > end) {
+//         return LABEL_ERR;
+//     }
+
+//     if (safe_copy(event, idx, MAX_QNAME_LEN, *cur, end, len) < 0) {
+//         return LABEL_ERR;
+//     }
+
+//     *cur += len;
+//     event->qname_len += len;
+//     return LABEL_OK;
+// }
+
+// // RFC1035 
+// static __always_inline void parse_domain(void *start, void **cursor, void *end, int dns_type) {
+//     struct dns_event *event = bpf_ringbuf_reserve(&events_ringbuf, sizeof(struct dns_event), 0);
+//     if (!event) {
+//         return;
+//     }
+//     event->dns_type = dns_type;
+//     event->qname_len = 0;
+
+//     // __u32 cr_idx =  event->qname_len;
+
+//     int label_status = LABEL_ERR;
+
+//     for (int i = 0; i < MAX_LABEL_COUNT; i++) {
+//         __u8 *cur = *cursor;
+//         if ((void*)(cur + 1) > end) {
+//             label_status = LABEL_ERR;
+//             break;
+//         }
+//         if (*cur == 0) {
+//             *cursor = cur + 1;
+//             label_status = LABEL_DONE;
+//             break;
+//         }
+//         if (event->qname_len + 1 > MAX_QNAME_LEN) {
+//             label_status = LABEL_ERR;
+//             break;
+//         }
+//         if (*cur >> 6 == 0x03) {
+//             if ((void*)(cur + 2) > end) {
+//                 label_status = LABEL_ERR;
+//                 break;
+//             }
+//             *cursor = (void*)(cur + 2);
+//             __u16 raw_cur;
+//             __builtin_memcpy(&raw_cur, cur, 2);
+//             __u16 host_val = bpf_ntohs(raw_cur);
+//             __u16 offset = host_val & 0x3FFF; // (0b0011_1111_1111_1111)
+//             asm volatile("" : "+r"(offset)); // Force verifier to avoid any optimizations with offset
+//             if (offset > MAX_DNS_OFFSET) {
+//                 label_status = LABEL_ERR;
+//                 break;
+//             }
+//             __u8 *buff_start = start;
+//             if ((void*)(buff_start + offset) > end) {
+//                 label_status = LABEL_ERR;
+//                 break;
+//             }
+//             cur = buff_start + offset;
+//             if ((void*)(cur + 1) > end) {
+//                 label_status = LABEL_ERR;
+//                 break;
+//             }
+//             label_status = read_label(event, &cur, cursor, end);
+//             break;
+//         }
+//         label_status = read_label(event, &cur, cursor, end);
+//         if (label_status == LABEL_ERR) {
+//             break;
+//         }
+//         *cursor = (void*)cur;
+//     }
+
+//     if (label_status == LABEL_OK || label_status == LABEL_DONE) {
+//         bpf_ringbuf_submit(event, 0);
+//     } 
+//     else {
+//         bpf_ringbuf_discard(event, 0); 
+//     }
+
+//     return;
+// }
 
 
 SEC("xdp")
