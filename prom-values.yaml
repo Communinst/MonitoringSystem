@@ -1,4 +1,4 @@
-# prom-values.yaml
+
 defaultRules:
   create: false 
 alertmanager:
@@ -10,13 +10,13 @@ grafana:
     enabled: true
     ingressClassName: traefik
     hosts:
-      - grafana.192.168.1.49.nip.io
+      - grafana.192.168.1.51.nip.io
 prometheus:
-  ingress:                  # ДОБАВЛЯЕМ ЭТОТ БЛОК
-    enabled: true           # 
+  ingress:                  
+    enabled: true           
     ingressClassName: traefik # 
     hosts:                  # 
-      - prometheus.192.168.1.49.nip.io # Адрес для прома
+      - prometheus.192.168.1.51.nip.io
   prometheusSpec:
     additionalScrapeConfigs: []
     additionalScrapeConfigsExternal: false

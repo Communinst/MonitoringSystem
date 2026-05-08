@@ -3,7 +3,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: dns-monitor-svc
-  namespace: kube-system # Тот же неймспейс, где лежит твой DaemonSet
+  namespace: kube-system 
   labels:
     app: dns-monitor
 spec:
@@ -26,8 +26,8 @@ spec:
   jobLabel: app
   selector:
     matchLabels:
-      app: dns-monitor # Ссылаемся на Service выше
+      app: dns-monitor
   endpoints:
     - port: metrics
       path: /metrics
-      interval: 15s # Частота скрейпинга (5 секунд для диплома/разработки - отлично, видно динамику)
+      interval: 15s 

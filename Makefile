@@ -7,9 +7,6 @@ APP_LABEL := app=dns-monitor
 export KUBECONFIG := $(HOME)/.kube/config
 
 
-# Компиляция BPF C-кода и генерация Go-обёрток через bpf2go.
-# bpf2go сам вызывает clang с флагами из //go:generate директивы.
-# Требуется clang на хосте. Пути в //go:generate относительные, поэтому cd.
 .PHONY: bpf-generate install-tools build push config deploy restart logs dev clean
 
 bpf-generate:
@@ -27,6 +24,8 @@ install-tools:
 	fi
 
 build:
+	docker image prune -f
+	sudo k3s ctr image prune --all
 	@echo "==> Building Docker image..."
 	docker build -t $(IMAGE_NAME) .
 
@@ -43,7 +42,7 @@ deploy: config
 	@echo "==> Applying DaemonSet and Monitoring..."
 	kubectl apply -f daemonset.yaml
 	kubectl apply -f monitoring.yaml
-	helm upgrade prom-stack prometheus-community/kube-prometheus-stack -n monitoring -f prom-values.yaml
+	helm upgrade prom-stack prometheus-community/kube-prometheus-stack -n monitoring -f prom-values.yaml --timeout 10m0s
 
 restart:
 	@echo "==> Restarting DaemonSet..."
@@ -62,8 +61,9 @@ logs:
 
 
 dev: push deploy restart logs
-dev-force: push clean deploy restart logs
-dev-test: push clean deploy wait-restart logs
+dev-force: bpf-generate push clean deploy restart logs
+dev-test: bpf-generate push clean deploy wait-restart logs
+dev-ebpf: bpf-generate push restart logs
 
 # Полная очистка
 clean:
