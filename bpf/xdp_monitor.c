@@ -335,9 +335,6 @@ static __always_inline int read_label(struct dns_event *event, __u8 **cur,
 
     *cur += len;
     crawler += len;
-    // if (*crawler > crawler_end) {
-    //     return LABEL_ERR;
-    // }
     return LABEL_OK;
 }
 
@@ -369,7 +366,7 @@ static __always_inline void parse_domain(void *start, void **cursor, void *end, 
             label_status = LABEL_DONE;
             break;
         }
-        if (crawler + 1 == crawler_end) {
+        if (crawler + 1 >= crawler_end) {
             label_status = LABEL_ERR;
             break;
         }
@@ -406,10 +403,7 @@ static __always_inline void parse_domain(void *start, void **cursor, void *end, 
             break;
         }
         *cursor = (void*)cur;
-        if (crawler >= crawler_end) {
-            label_status = LABEL_ERR;
-            break;
-        }
+        
     }
 
     if (label_status == LABEL_OK || label_status == LABEL_DONE) {
