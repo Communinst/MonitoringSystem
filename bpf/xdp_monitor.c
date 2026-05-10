@@ -67,7 +67,6 @@ int xdp_watch(struct xdp_md *ctx) { // Supports VLANs and default eth frame
     if (cursor >= frame_end) {
         return XDP_PASS;
     }
-
     void *dns_start = cursor;
     int dns_type = parse_dns(&cursor, frame_end);
     if (dns_type == DNS_UNKNOWN) {
@@ -77,9 +76,10 @@ int xdp_watch(struct xdp_md *ctx) { // Supports VLANs and default eth frame
         return XDP_PASS;
     }
     
-    if (dns_type == DNS_QUERY || dns_type == DNS_RESPONSE_NXDOMAIN) {
-        parse_domain(dns_start, &cursor, frame_end, dns_type);
-    }
+    // if (dns_type == DNS_QUERY || dns_type == DNS_RESPONSE_NXDOMAIN || dns_type == DNS_RESPONSE_OK) {
+    //     parse_domain(dns_start, &cursor, frame_end, dns_type);
+    // }
+    parse_domain(dns_start, &cursor, frame_end, dns_type);
     if (cursor >= frame_end) {
         return XDP_PASS;
     }

@@ -4,10 +4,11 @@
 #include "../linux/if_ether.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
+#include <string.h>
 #include "./maps.h"
 
 #define MAX_QNAME_LEN 255
-#define MAX_LABEL_COUNT 10
+#define MAX_LABEL_COUNT 127
 #define MAX_LABEL_LEN 63 
 #define MAX_DNS_OFFSET 4096 
 #define DNS_PORT 53
@@ -300,320 +301,62 @@ static __always_inline int parse_dns(void **cursor, void *end) {
 }
 
 
-static __always_inline int safe_copy(__u8 *dst_pos, __u8 *dst_end, 
-                                     __u8 *src, void *src_end, int len) {
-
-    //
-    __u8 tmp[MAX_LABEL_LEN] = {};
-
-    if ((void*)(src + len) > src_end)
-    {
-        return -1;
-    }
-    if (dst_pos + len > dst_end)
-    {
-        return -1;
-    }
-    
-    
-    if (bpf_probe_read_kernel(tmp, len, src) < 0) 
-    {
-        return -1;
-    }
-    // #pragma unroll
-    // for (int i = 0; i < MAX_LABEL_LEN; i++) {
-    //     if (i >= len)
-    //     {
-    //         break;
-    //     }  
-    //     dst_pos[i] = tmp[i];
-    // }
-
-    return 0;
-}
-
-static __always_inline int read_label(struct dns_event *event, __u8 **cur, 
-                                    void **cursor, void *end, 
-                                    __u8 **crawler, __u8 *crawler_end) {
-    __u8 len = **cur;
-    if (len == 0 || len > MAX_LABEL_LEN) {
-        return LABEL_ERR;
-    }
-    ++(*cur);
-    ++(event->qname_len);
-    **crawler = '.';
-    ++(*crawler);
-    
-    if (*crawler + len > crawler_end) { 
-        return LABEL_ERR;
-    }
-    if ((void*)(*cur + len) > end) {
-        return LABEL_ERR;
-    }
-    if (safe_copy(*crawler, crawler_end, *cur, end, len) < 0) {
-        return LABEL_ERR;
-    }
-
-    *cur += len;
-    *crawler += len;
-    return LABEL_OK;
-}
-
-// RFC1035 
-static __always_inline void parse_domain(void *start, void **cursor, void *end, int dns_type) {
-    struct dns_event *event = bpf_ringbuf_reserve(&events_ringbuf, sizeof(struct dns_event), 0);
-    if (!event) {
-        return;
-    }
-    event->dns_type = dns_type;
-    event->qname_len = 0;
-
-    __u8 *crawler = event->qname;
-    __u8 *crawler_end = event->qname + MAX_QNAME_LEN;
-
-    int label_status = LABEL_ERR;
-
-    for (int i = 0; i < MAX_LABEL_COUNT; i++) {
-        __u8 *cur = *cursor;
-        if ((void*)(cur + 1) > end) {
-            label_status = LABEL_ERR;
-            break;
-        }
-        if (*cur == 0) {
-            *cursor = cur + 1;
-            label_status = LABEL_DONE;
-            break;
-        }
-        if (crawler + 1 >= crawler_end) {
-            label_status = LABEL_ERR;
-            break;
-        }
-        if (*cur >> 6 == 0x03) {
-            if ((void*)(cur + 2) > end) {
-                label_status = LABEL_ERR;
-                break;
-            }
-            *cursor = (void*)(cur + 2);
-            __u16 raw_cur;
-            __builtin_memcpy(&raw_cur, cur, 2);
-            __u16 host_val = bpf_ntohs(raw_cur);
-            __u16 offset = host_val & 0x3FFF; // (0b0011_1111_1111_1111)
-            asm volatile("" : "+r"(offset)); // Force verifier to avoid any optimizations with offset
-            if (offset > MAX_DNS_OFFSET) {
-                label_status = LABEL_ERR;
-                break;
-            }
-            __u8 *buff_start = start;
-            if ((void*)(buff_start + offset) > end) {
-                label_status = LABEL_ERR;
-                break;
-            }
-            cur = buff_start + offset;
-            if ((void*)(cur + 1) > end) {
-                label_status = LABEL_ERR;
-                break;
-            }
-            label_status = read_label(event, &cur, cursor, end, &crawler, crawler_end);
-            break;
-        }
-        label_status = read_label(event, &cur, cursor, end, &crawler, crawler_end);
-        if (label_status == LABEL_ERR) {
-            break;
-        }
-        if (crawler >= crawler_end) {
-            label_status = LABEL_ERR;
-            break;
-        }
-        *cursor = (void*)cur;
-        
-    }
-
-    if (label_status == LABEL_OK || label_status == LABEL_DONE) {
-        bpf_ringbuf_submit(event, 0);
-    } 
-    else {
-        bpf_ringbuf_discard(event, 0); 
-    }
-
-    return;
-}
-
-
-// static __always_inline int handle_compression(void *cursor, void *end, struct dns_event *event) {
-//     return LABEL_OK;
-// }
-
-// // static __always_inline int parse_domain(void *start, void **cursor, void *end, int dns_type) {
-// //     struct dns_event *event = bpf_ringbuf_reserve(&events_ringbuf, sizeof(struct dns_event), 0);
-// //     if (!event) {
-// //         return -1;
-// //     }
-// //     event->dns_type = dns_type;
-// //     event->qname_len = 0;
-
-// //     __u8 *cur = *cursor;
-// //     __u8 *crawler = event->qname;
-// //     __u8 *crawler_end = event->qname + MAX_QNAME_LEN;
-
-// //     __u8 label_within = 0;
-// //     int status = LABEL_ERR;
-
-// //     for (int i = 0; i < MAX_QNAME_LEN; i++) 
-// //     {   
-// //         if ((void*)(cur + 1) > end || crawler >= crawler_end) 
-// //         {
-// //             status = LABEL_ERR;
-// //             break;
-// //         }
-// //         __u8 data = *cur;
-// //         if (data == 0x00) 
-// //         {
-// //             status = LABEL_OK;
-// //             break;
-// //         }
-
-// //         if (label_within == 0){
-// //             if (data >> 6 == 0x03) 
-// //             {
-// //                 //status = handle_compression(cur, end, event);
-// //                 break;
-// //             }
-// //             else 
-// //             {
-// //                 if (data < 1 || data > MAX_LABEL_LEN) 
-// //                 {
-// //                     status = LABEL_ERR;
-// //                     break;
-// //                 }
-// //                 label_within = data;
-// //                 *crawler = '.';
-// //                 ++crawler;
-// //                 ++cur;
-// //                 event->qname_len++;
-// //             }
-// //         }
-// //         else {
-// //             *crawler = data;
-// //             ++crawler;
-// //             ++cur;
-// //             --label_within;
-// //             event->qname_len++;
-// //         }
-// //     }
-// //     if (status == LABEL_OK) {
-// //         bpf_ringbuf_submit(event, 0);
-// //     } 
-// //     else {
-// //         bpf_ringbuf_discard(event, 0); 
-// //     }
-// //     *cursor = (void*)cur + 1;
-// //     return status;
-
-// // }
-
-// struct parse_ctx {
-//     struct dns_event *event;
-//     __u8 *cur;         
-//     void *end;         
-//     __u8 *crawler;     
-//     __u8 *crawler_end; 
-//     __u8 label_within; 
-//     int status;        
-//     int finished;      
-// };
-
-// static __u64 loop_callback(__u32 index, struct parse_ctx *ctx) {
-//     if (ctx->finished)
-//         return 1;
-
-//     if ((void*)(ctx->cur + 1) > ctx->end || ctx->crawler >= ctx->crawler_end) {
-//         ctx->status = LABEL_ERR;
-//         ctx->finished = 1;
-//         return 1;
+// static __always_inline int parse_domain(void *start, void **cursor, void *end, int dns_type) 
+// {
+//     struct dns_event *event = bpf_ringbuf_reserve(&events_ringbuf, sizeof(struct dns_event), 0);
+//     if (!event) 
+//     {
+//         return -1;
 //     }
+//     event->dns_type = dns_type;
+//     event->qname_len = 0;
+//     __u8 *cur = *cursor;
 
-//     __u8 data = *ctx->cur;
-
-//     if (data == 0x00) {
-//         ctx->status = LABEL_OK;
-//         ctx->finished = 1;
-//         return 1;
-//     }
-
-//     // Нет текущей метки – начинаем новую
-//     if (ctx->label_within == 0) {
-//         // Проверка на компрессию (указатель 0b11xxxxxx)
-//         if ((data >> 6) == 0x03) {
-//             // Если компрессию обрабатывать не нужно – просто ошибка
-//             ctx->status = LABEL_ERR;
-//             ctx->finished = 1;
-//             return 1;
-//         } else {
-//             // Длина метки должна быть 1..63
-//             if (data < 1 || data > MAX_LABEL_LEN) {
-//                 ctx->status = LABEL_ERR;
-//                 ctx->finished = 1;
-//                 return 1;
-//             }
-//             ctx->label_within = data;
-//             // Ставим точку перед меткой (кроме первой)
-//             if (ctx->event->qname_len > 0) {
-//                 *ctx->crawler = '.';
-//                 ctx->crawler++;
-//                 ctx->event->qname_len++;
-//                 if (ctx->crawler >= ctx->crawler_end) {
-//                     ctx->status = LABEL_ERR;
-//                     ctx->finished = 1;
-//                     return 1;
-//                 }
-//             }
-//             ctx->cur++;
+//     #pragma unroll
+//     for (int i = 0; i < MAX_QNAME_LEN; i++) 
+//     {
+//         if ((void*)(cur + 1) > end) 
+//         {
+//             bpf_ringbuf_discard(event, 0); 
+//             return -1;
 //         }
-//     } else {
-//         *ctx->crawler = data;
-//         ctx->crawler++;
-//         ctx->cur++;
-//         ctx->label_within--;
-//         ctx->event->qname_len++;
+
+//         event->qname[event->qname_len] = *cur;
+//         ++event->qname_len;
+//         if (*cur == 0) {
+//             break;
+//         }
+//         ++cur;
 //     }
 
+//     bpf_ringbuf_submit(event, 0);
+//     *cursor = (void *)(cur + 1);
 //     return 0;
 // }
 
-// static __always_inline int parse_domain(void *start, void **cursor, void *end, int dns_type) {
-//     struct dns_event *event = bpf_ringbuf_reserve(&events_ringbuf, sizeof(struct dns_event), 0);
-//     if (!event)
-//         return -1;
 
-//     event->dns_type = dns_type;
-//     event->qname_len = 0;
+static __always_inline int parse_domain(void *start, void **cursor, void *end, int dns_type) 
+{
+    struct dns_event *temp_event = bpf_map_lookup_elem(&scratchpad_map, &(const __u32){0});
+    temp_event->dns_type = dns_type;
+    temp_event->qname_len = 0;
+    __builtin_memset(temp_event->qname, 0, 255);
 
-//     struct parse_ctx ctx = {
-//         .event = event,
-//         .cur = (__u8*)*cursor, 
-//         .end = end,
-//         .crawler = event->qname,
-//         .crawler_end = event->qname + MAX_QNAME_LEN,
-//         .label_within = 0,
-//         .status = LABEL_ERR,
-//         .finished = 0,
-//     };
+    __u8* dns_payload = *cursor;
 
-//     long iter = bpf_loop(10, loop_callback, &ctx, 0);
-//     if (iter != event->qname_len) {
-//         bpf_ringbuf_discard(event, 0);
-//         return -1;
-//     }
-
-//     if (ctx.status == LABEL_OK) {
-//         if (ctx.crawler < ctx.crawler_end)
-//             *ctx.crawler = '\0';
-//         bpf_ringbuf_submit(event, 0);
-//     } else {
-//         bpf_ringbuf_discard(event, 0);
-//     }
-
-//     *cursor = (void*)(ctx.cur + 1);
-
-//     return ctx.status;
-// }
+    #pragma unroll
+    for (int i = 0; i < MAX_QNAME_LEN; i++) 
+    {
+        if ((void*)(dns_payload + i) >= end) 
+        {
+            return -1;
+        }
+        if (*dns_payload == 0) {
+            temp_event->qname_len = i + 1;
+            break;
+        }
+        temp_event->qname[i] = *(dns_payload + i);
+    }
+    
+    return 0;
+}
