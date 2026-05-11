@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -21,7 +20,6 @@ import (
 	"github.com/Communinst/MonitoringSystem/internal/router"
 	"github.com/Communinst/MonitoringSystem/internal/server"
 	"github.com/Communinst/MonitoringSystem/internal/service"
-	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 
@@ -115,12 +113,6 @@ func main() {
 	slog.Info("Application exited correctly")
 }
 
-type bpfEvent struct {
-	DnsType  uint16
-	QnameLen uint16
-	Qname    [255]byte
-}
-
 func setupLayers(b *bpfObj.BpfMaps) *handler.DNSMonitorHandler {
 	metricsRepo := repository.NewBpfMetricsRepository(b)
 	repo := repository.NewDNSMonitorRepository(metricsRepo)
@@ -140,19 +132,29 @@ func prometheusSetup(svc *service.DNSMonitorService) *prometheus.Registry {
 func bootBPF() (bpfObj.BpfObjects, error) {
 
 	var objs bpfObj.BpfObjects
-	if err := bpfObj.LoadBpfObjects(&objs, &ebpf.CollectionOptions{
-		Programs: ebpf.ProgramOptions{
-			LogSizeStart: 1024 * 1024 * 5,
-			LogLevel:     ebpf.LogLevelInstruction | ebpf.LogLevelBranch,
-		},
-	}); err != nil {
-		log.Printf("Failed to load eBPF objects: %v", err)
-		var ve *ebpf.VerifierError
-		if errors.As(err, &ve) {
-			// Это выведет полный лог в консоль!
-			fmt.Printf("Verifier Error Log:\n%+v\n", ve)
-		}
+	if err := bpfObj.LoadBpfObjects(&objs, nil); err != nil {
+		fmt.Printf("Failed to load eBPF objects: %v\n", err)
 		return bpfObj.BpfObjects{}, err
 	}
 	return objs, nil
 }
+
+// func bootBPF() (bpfObj.BpfObjects, error) {
+
+// 	var objs bpfObj.BpfObjects
+// 	if err := bpfObj.LoadBpfObjects(&objs, &ebpf.CollectionOptions{
+// 		Programs: ebpf.ProgramOptions{
+// 			LogSizeStart: 256 * 1,
+// 			LogLevel:     ebpf.LogLevelInstruction | ebpf.LogLevelBranch,
+// 		},
+// 	}); err != nil {
+// 		log.Printf("Failed to load eBPF objects: %v", err)
+// 		var ve *ebpf.VerifierError
+// 		if errors.As(err, &ve) {
+// 			// Это выведет полный лог в консоль!
+// 			fmt.Printf("Verifier Error Log:\n%+v\n", ve)
+// 		}
+// 		return bpfObj.BpfObjects{}, err
+// 	}
+// 	return objs, nil
+// }

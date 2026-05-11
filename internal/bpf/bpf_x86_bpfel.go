@@ -14,11 +14,11 @@ import (
 )
 
 type BpfDnsEvent struct {
-	_        structs.HostLayout
-	DnsType  uint16
-	QnameLen uint16
-	Qname    [255]uint8
-	_        [1]byte
+	_              structs.HostLayout
+	DnsType        uint16
+	QnameLen       uint16
+	Qname          [255]uint8
+	CompressionLen uint8
 }
 
 // LoadBpf returns the embedded CollectionSpec for Bpf.

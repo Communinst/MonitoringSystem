@@ -8,6 +8,7 @@
 #include "./maps.h"
 
 #define MAX_QNAME_LEN 255
+#define QNAME_LEN 128
 #define MAX_LABEL_COUNT 127
 #define MAX_LABEL_LEN 63 
 #define MAX_DNS_OFFSET 4096 
@@ -59,6 +60,7 @@ struct dns_event {
     __u16 dns_type;
     __u16 qname_len;
     __u8 qname[MAX_QNAME_LEN];
+    __u8 compression_len;
 };
 
 // static __always_inline void increment_metric(__u32 index) {
@@ -80,28 +82,28 @@ static __always_inline int parse_eth(void **cursor, void const *end) {
     *cursor = (void *)(eth + 1); 
 
     // 802.1AD 
-    if (eth_type == ETH_P_8021AD) {
-        struct vlan_hdr *ad = *cursor;
+    // if (eth_type == ETH_P_8021AD) {
+    //     struct vlan_hdr *ad = *cursor;
         
-        if ((void *)(ad + 1) > end) {
-            return -1; // frame corrupted
-        }
-        eth_type = bpf_ntohs(ad->h_vlan_encapsulated_proto);
+    //     if ((void *)(ad + 1) > end) {
+    //         return -1; // frame corrupted
+    //     }
+    //     eth_type = bpf_ntohs(ad->h_vlan_encapsulated_proto);
 
-        *cursor = (void *)(ad + 1);
-    }  
+    //     *cursor = (void *)(ad + 1);
+    // }  
 
-    // 802.1Q 
-    if (eth_type == ETH_P_8021Q) {
-        struct vlan_hdr *ad = *cursor;
+    // // 802.1Q 
+    // if (eth_type == ETH_P_8021Q) {
+    //     struct vlan_hdr *ad = *cursor;
         
-        if ((void *)(ad + 1) > end) {
-            return -1; // frame corrupted
-        }
-        eth_type = bpf_ntohs(ad->h_vlan_encapsulated_proto);
+    //     if ((void *)(ad + 1) > end) {
+    //         return -1; // frame corrupted
+    //     }
+    //     eth_type = bpf_ntohs(ad->h_vlan_encapsulated_proto);
         
-        *cursor = (void *)(ad + 1);
-    }
+    //     *cursor = (void *)(ad + 1);
+    // }
 
     // IPv4 or IPv6
     return eth_type;
@@ -151,8 +153,15 @@ static __always_inline int parse_ip_v6(void **cursor, void const *end) {
     int nexthdr = ipv6->nexthdr;
     void *buf_cursor = (void *)(ipv6 + 1);
 
-    for (int i = 0; i < 4; i++) {
-        if (nexthdr == 44) { // NEXTHDR_FRAGMENT
+    #pragma unroll
+    for (int i = 0; i < 4; ++i) 
+    {
+        if (nexthdr != 44 && nexthdr != 0 && nexthdr != 43 && nexthdr != 60) 
+        {
+            break;
+        }
+        if (nexthdr == 44) 
+        { // NEXTHDR_FRAGMENT
             struct frag_hdr *frag = buf_cursor;
             if ((void*)(frag + 1) > end) {
                 return CORRUPTED;
@@ -166,8 +175,9 @@ static __always_inline int parse_ip_v6(void **cursor, void const *end) {
             
             nexthdr = frag->nexthdr;
             buf_cursor = (void *)(frag + 1);
-        } else if (nexthdr == 0 || nexthdr == 43 || nexthdr == 60) { 
-            // NEXTHDR_HOP (0), NEXTHDR_ROUTING (43), NEXTHDR_DEST (60)
+        } 
+        else 
+        { 
             struct { __u8 next; __u8 len; } *ext = buf_cursor;
             if ((void*)(ext + 1) > end) {
                 return CORRUPTED;
@@ -177,25 +187,11 @@ static __always_inline int parse_ip_v6(void **cursor, void const *end) {
             if (buf_cursor > end) {
                 return CORRUPTED;
             }
-        } else {
-            break;
-        }
+        } 
     }
 
     *cursor = buf_cursor;
     return nexthdr;
-}
-
-
-static __always_inline int parse_ip(void **cursor, void const *end, int ip_type) {
-    switch (ip_type) {
-        case ETH_P_IP:
-            return parse_ip_v4(cursor, end);
-        case ETH_P_IPV6:
-            return parse_ip_v6(cursor, end);
-        default:
-            return -1;
-    }
 }
 
 
@@ -218,11 +214,11 @@ static __always_inline int parse_udp_for_dns(void **cursor, void *end, __u16 *ud
 
     *cursor = (void *)(udp + 1);
 
-    if (src_port == 53 || dest_port == 53) {
-        return DNS_YES;
+    if (src_port != 53 && dest_port != 53) {
+        return DNS_NO;
     }
 
-    return DNS_NO;
+    return DNS_YES;
 }
 
 
@@ -249,30 +245,17 @@ static __always_inline int parse_tcp_for_dns(void **cursor, void *end, __u16 *pa
 
     *cursor = buf_cursor;
 
-    if (src_port == 53 || dest_port == 53) {
-        // TCP DNS messages have a 2-byte length prefix
-        __be16 *len_ptr = *cursor;
-        if ((void*)(len_ptr + 1) > end) {
-            return DNS_UNKNOWN; 
-        }
-        *payload_len = bpf_ntohs(*len_ptr);
-        *cursor = (void *)(len_ptr + 1);
-
-        return DNS_YES;
+    if (src_port != 53 && dest_port != 53) {
+        return DNS_NO;
     }
-
-    return DNS_NO;
-}
-
-static __always_inline int parse_for_dns(void **cursor, void *end, int l4_proto, __u16 *payload_len) {
-    switch (l4_proto) {
-        case IPPROTO_UDP:
-            return parse_udp_for_dns(cursor, end, payload_len);
-        case IPPROTO_TCP:
-            return parse_tcp_for_dns(cursor, end, payload_len);
-        default:
-            return DNS_NO;
+    __be16 *len_ptr = *cursor;
+    if ((void*)(len_ptr + 1) > end) {
+        return DNS_UNKNOWN; 
     }
+    *payload_len = bpf_ntohs(*len_ptr);
+    *cursor = (void *)(len_ptr + 1);
+    return DNS_YES;
+    
 }
 
 static __always_inline int parse_dns(void **cursor, void *end) {
@@ -301,62 +284,174 @@ static __always_inline int parse_dns(void **cursor, void *end) {
 }
 
 
-// static __always_inline int parse_domain(void *start, void **cursor, void *end, int dns_type) 
-// {
-//     struct dns_event *event = bpf_ringbuf_reserve(&events_ringbuf, sizeof(struct dns_event), 0);
-//     if (!event) 
-//     {
-//         return -1;
-//     }
-//     event->dns_type = dns_type;
-//     event->qname_len = 0;
-//     __u8 *cur = *cursor;
-
-//     #pragma unroll
-//     for (int i = 0; i < MAX_QNAME_LEN; i++) 
-//     {
-//         if ((void*)(cur + 1) > end) 
-//         {
-//             bpf_ringbuf_discard(event, 0); 
-//             return -1;
-//         }
-
-//         event->qname[event->qname_len] = *cur;
-//         ++event->qname_len;
-//         if (*cur == 0) {
-//             break;
-//         }
-//         ++cur;
-//     }
-
-//     bpf_ringbuf_submit(event, 0);
-//     *cursor = (void *)(cur + 1);
-//     return 0;
-// }
 
 
-static __always_inline int parse_domain(void *start, void **cursor, void *end, int dns_type) 
+static __always_inline int parse_domain(void *start, void **cursor, void *end) 
 {
     struct dns_event *temp_event = bpf_map_lookup_elem(&scratchpad_map, &(const __u32){0});
-    temp_event->dns_type = dns_type;
+    if (!temp_event) 
+    {
+        return -1;
+    }
     temp_event->qname_len = 0;
-    __builtin_memset(temp_event->qname, 0, 255);
 
     __u8* dns_payload = *cursor;
 
     #pragma unroll
-    for (int i = 0; i < MAX_QNAME_LEN; i++) 
+    for (int i = 0; i < MAX_QNAME_LEN; ++i) 
     {
-        if ((void*)(dns_payload + i) >= end) 
+        if ((void*)(dns_payload + 1) > end) 
         {
             return -1;
         }
-        if (*dns_payload == 0) {
+        __u8 current = *dns_payload;
+        if (current == 0) {
             temp_event->qname_len = i + 1;
             break;
         }
-        temp_event->qname[i] = *(dns_payload + i);
+        temp_event->qname[i] = current;
+        ++dns_payload;
     }
     
     return 0;
 }
+
+
+// static __always_inline int handle_domain_compression(struct dns_event *temp_event, void *cur, void *end) 
+// {
+//     __u8* dns_payload = cur;
+//     __u8 label_within = 0;
+//     // __u8 label_within = *dns_payload;
+//     // if (label_within == 0 || label_within > MAX_LABEL_LEN) 
+//     // {
+//     //     return -1;
+//     // }
+//     // if ((void*)(dns_payload + label_within + 1) > end) 
+//     // {
+//     //     return -1;
+//     // }
+//     // ++dns_payload;
+//     #pragma unroll
+//     for (int i = 0; i < MAX_QNAME_LEN; ++i) 
+//     {
+//         if ((void*)(dns_payload + 1) > end) 
+//         {
+//             return -1;
+//         }
+//         __u8 current = *dns_payload;
+//         if (current == 0) 
+//         {
+//             temp_event->qname_len = i + 1;
+//             break;
+//         }
+//         if (current >> 6 == 0x03) 
+//         {   if ((void*)(dns_payload + 2) > end) {
+//                 return -1;
+//             }
+//             __u16 raw_cur = *dns_payload;
+//             __u16 host_val = bpf_ntohs(raw_cur);
+//             __u16 offset = host_val & 0x3FFF; // (0b0011_1111_1111_1111)
+//             asm volatile("" : "+r"(offset)); // Force verifier to avoid any optimizations with offset
+//             if (offset > MAX_DNS_OFFSET) {
+//                 return -1;
+//             }
+//             __u8 *buff_start = start;
+//             if ((void*)(buff_start + offset) > end) {
+//                 return -1;
+//             }
+//             __u8 *cur = buff_start + offset;
+//             if ((void*)(cur + 1) > end) {
+//                 return -1;
+//             }
+//             return handle_domain_compression(temp_event, cur, end);
+//         }
+//         if (label_within == 0) 
+//         {
+//             label_within = current;
+//             if (label_within == 0 || label_within > MAX_LABEL_LEN) 
+//             {
+//                 return -1;
+//             }
+//             if ((void*)(dns_payload + label_within + 1) > end) 
+//             {
+//                 return -1;
+//             }
+//             current = '.';
+//         }
+//         else 
+//         {
+//             --label_within;
+//         }
+//         temp_event->qname[i] = current;
+//         ++dns_payload;
+//     }
+
+//     return 0;
+// }
+
+
+static __always_inline int parse_domain_compression(void *cursor, void *end, void *start, struct dns_event *temp_event)
+{
+    __u8 *dns_payload = cursor;
+    __u8 cur_len = temp_event->qname_len;
+    dns_payload += temp_event->qname_len;
+
+    if ((void *)(dns_payload + 2) > end) 
+    {
+        return -1;
+    }
+
+    __u16 ptr_value = (*dns_payload);
+    ptr_value <<= 8;
+    return 0;
+}
+
+static __always_inline int parse_domain_filtered(void *cursor, void *end, struct dns_event *temp_event) 
+{
+    temp_event->qname_len = 0;
+    temp_event->compression_len = 0;
+
+    __u8* dns_payload = cursor;
+    __u8 label_within = 0;
+    #pragma unroll
+    for (int i = 0; i < MAX_QNAME_LEN; ++i) 
+    {
+        if ((void*)(dns_payload + 1) > end) 
+        {
+            return -1;
+        }
+        __u8 current = *dns_payload;
+        if (current == 0) 
+        {   
+            temp_event->qname_len = i + 1;
+            break;
+        }
+        if (current >> 6 == 0x03) 
+        {   
+            temp_event->qname_len = i;
+            return 1;
+        }
+        if (label_within == 0) 
+        {
+            label_within = current;
+            if (label_within == 0 || label_within > MAX_LABEL_LEN) 
+            {
+                return -1;
+            }
+            if ((void*)(dns_payload + label_within + 1) > end) 
+            {
+                return -1;
+            }
+            current = '.';
+        }
+        else 
+        {
+            --label_within;
+        }
+        temp_event->qname[i] = current;
+        ++dns_payload;
+    }
+
+    return 0;
+}
+

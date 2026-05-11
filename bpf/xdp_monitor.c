@@ -45,29 +45,74 @@ int xdp_watch(struct xdp_md *ctx) { // Supports VLANs and default eth frame
         return XDP_PASS;
     }
     // IPv4 or IPv6
-    int l4_proto = parse_ip(&cursor, frame_end, ip_type);
+    int l4_proto = 0;
+    if (ip_type == ETH_P_IP || ip_type == ETH_P_IPV6) 
+    {
+        if (ip_type == ETH_P_IP) 
+        {
+            l4_proto = parse_ip_v4(&cursor, frame_end);
+        } 
+        else 
+        {
+            l4_proto = parse_ip_v6(&cursor, frame_end);
+        }
+    } 
+    else 
+    {
+        return XDP_PASS;
+    }
+
     // Handling subsequent fragments in XDP is extremely difficult, 
     // so pass them. Anyway they can't contain DNS header, so we won't lose 
     // any important information for XDP monitoring.
-    if (l4_proto < FRAG_HEAD) {
+    if (l4_proto < FRAG_HEAD) 
+    {
         return XDP_PASS;
     }
-    if (cursor >= frame_end) {
+    if (cursor >= frame_end) 
+    {
         return XDP_PASS;
     }
-    
     
     // Only UDP and TCP accepted.
     __u16 payload_len = 0;
-    int is_dns = parse_for_dns(&cursor, frame_end, l4_proto, &payload_len);
+    int is_dns = 0;
     // Dissect only DNS packets, pass the rest
+    // if (l4_proto == IPPROTO_UDP || l4_proto == IPPROTO_TCP) 
+    // {
+    //     if (l4_proto == IPPROTO_UDP) 
+    //     {
+    //         is_dns = parse_udp_for_dns(&cursor, frame_end, &payload_len);
+    //     } 
+    //     else 
+    //     {
+    //         is_dns = parse_tcp_for_dns(&cursor, frame_end, &payload_len);
+    //     }
+    // } 
+    // else 
+    // {
+    //     return XDP_PASS;
+    // }
+    if (l4_proto != IPPROTO_UDP && l4_proto != IPPROTO_TCP) 
+    {
+        return XDP_PASS;
+    }
+    if (l4_proto == IPPROTO_UDP) 
+    {
+        is_dns = parse_udp_for_dns(&cursor, frame_end, &payload_len);
+    } 
+    else 
+    {
+        is_dns = parse_tcp_for_dns(&cursor, frame_end, &payload_len);
+    }
     if (is_dns != DNS_YES) {
         return XDP_PASS;
     }
     if (cursor >= frame_end) {
         return XDP_PASS;
     }
-    void *dns_start = cursor;
+
+    __u8 *dns_start = cursor;
     int dns_type = parse_dns(&cursor, frame_end);
     if (dns_type == DNS_UNKNOWN) {
         return XDP_PASS;
@@ -75,34 +120,55 @@ int xdp_watch(struct xdp_md *ctx) { // Supports VLANs and default eth frame
     if (cursor >= frame_end) {
         return XDP_PASS;
     }
-    
-    // if (dns_type == DNS_QUERY || dns_type == DNS_RESPONSE_NXDOMAIN || dns_type == DNS_RESPONSE_OK) {
-    //     parse_domain(dns_start, &cursor, frame_end, dns_type);
-    // }
-    parse_domain(dns_start, &cursor, frame_end, dns_type);
-    if (cursor >= frame_end) {
+
+    if (dns_type == DNS_RESPONSE_NXDOMAIN) 
+    {
+        increment_metric(2); 
+    } 
+    if (cursor >= frame_end) 
+    {
         return XDP_PASS;
     }
 
-    if (dns_type == DNS_QUERY) {
-        increment_metric(0);
-        return XDP_PASS;
-    }
-    else if (dns_type == DNS_RESPONSE_OK || dns_type == DNS_RESPONSE_NXDOMAIN || dns_type == DNS_RESPONSE_OTHER) {
-        __u32 key = 0;
-        __u32 *max_size = bpf_map_lookup_elem(&config_map, &key);
-        
-        // Amplification protection
-        if (max_size && payload_len > *max_size) {
-            increment_metric(1); 
-            return XDP_DROP;
-        }
-        
-        if (dns_type == DNS_RESPONSE_NXDOMAIN) {
-            increment_metric(2);
-        }
+    __u32 key = 0;
+    __u32 *max_size = bpf_map_lookup_elem(&config_map, &key);
+    
+    if (max_size && payload_len > *max_size) {
+        increment_metric(1); 
+        return XDP_DROP;
     }
 
     increment_metric(0);
+
+    struct dns_event *temp_event = bpf_map_lookup_elem(&scratchpad_map, &key);
+    if (!temp_event) 
+    {
+        return XDP_PASS;
+    }
+    int status = parse_domain_filtered(cursor, frame_end, temp_event);
+    status = (status == 1) 
+    ? parse_domain_compression(cursor, frame_end, dns_start, temp_event)
+    : status;
+    if (status < 0) {
+        return XDP_PASS;
+    }
+
+    
+    __u8 qname_len = temp_event->qname_len & 0xFF; 
+    if (qname_len == 0 || qname_len > MAX_QNAME_LEN)
+    {
+        return XDP_PASS;
+    }
+    temp_event->dns_type = dns_type;
+    temp_event->qname[qname_len - 1] = 0;
+
+    __u8 *buff = (__u8 *)(cursor) + temp_event->qname_len;
+    if ((void*)(buff) >= frame_end) 
+    {
+        return XDP_PASS;
+    }
+    cursor = (void*)(buff);
+    
+
     return XDP_PASS;
  }
