@@ -274,63 +274,31 @@ static __always_inline int parse_dns(void **cursor, void *end) {
     int rcode = flags & 0x0F;
     *cursor = (void*)(dns + 1);
 
-    if (rcode == 3) {
+    if (rcode == 3) 
+    {
         return DNS_RESPONSE_NXDOMAIN;
-    } else if (rcode == 0) {
+    }
+    if (rcode == 0) 
+    {
         return DNS_RESPONSE_OK;
     }
-    
     return DNS_RESPONSE_OTHER;
 }
 
 
 
 
-static __always_inline int parse_domain(void *start, void **cursor, void *end) 
-{
-    struct dns_event *temp_event = bpf_map_lookup_elem(&scratchpad_map, &(const __u32){0});
-    if (!temp_event) 
-    {
-        return -1;
-    }
-    temp_event->qname_len = 0;
-
-    __u8* dns_payload = *cursor;
-
-    #pragma unroll
-    for (int i = 0; i < MAX_QNAME_LEN; ++i) 
-    {
-        if ((void*)(dns_payload + 1) > end) 
-        {
-            return -1;
-        }
-        __u8 current = *dns_payload;
-        if (current == 0) {
-            temp_event->qname_len = i + 1;
-            break;
-        }
-        temp_event->qname[i] = current;
-        ++dns_payload;
-    }
-    
-    return 0;
-}
-
-
-// static __always_inline int handle_domain_compression(struct dns_event *temp_event, void *cur, void *end) 
+// static __always_inline int parse_domain(void *start, void **cursor, void *end) 
 // {
-//     __u8* dns_payload = cur;
-//     __u8 label_within = 0;
-//     // __u8 label_within = *dns_payload;
-//     // if (label_within == 0 || label_within > MAX_LABEL_LEN) 
-//     // {
-//     //     return -1;
-//     // }
-//     // if ((void*)(dns_payload + label_within + 1) > end) 
-//     // {
-//     //     return -1;
-//     // }
-//     // ++dns_payload;
+//     struct dns_event *temp_event = bpf_map_lookup_elem(&scratchpad_map, &(const __u32){0});
+//     if (!temp_event) 
+//     {
+//         return -1;
+//     }
+//     temp_event->qname_len = 0;
+
+//     __u8* dns_payload = *cursor;
+
 //     #pragma unroll
 //     for (int i = 0; i < MAX_QNAME_LEN; ++i) 
 //     {
@@ -339,70 +307,75 @@ static __always_inline int parse_domain(void *start, void **cursor, void *end)
 //             return -1;
 //         }
 //         __u8 current = *dns_payload;
-//         if (current == 0) 
-//         {
+//         if (current == 0) {
 //             temp_event->qname_len = i + 1;
 //             break;
-//         }
-//         if (current >> 6 == 0x03) 
-//         {   if ((void*)(dns_payload + 2) > end) {
-//                 return -1;
-//             }
-//             __u16 raw_cur = *dns_payload;
-//             __u16 host_val = bpf_ntohs(raw_cur);
-//             __u16 offset = host_val & 0x3FFF; // (0b0011_1111_1111_1111)
-//             asm volatile("" : "+r"(offset)); // Force verifier to avoid any optimizations with offset
-//             if (offset > MAX_DNS_OFFSET) {
-//                 return -1;
-//             }
-//             __u8 *buff_start = start;
-//             if ((void*)(buff_start + offset) > end) {
-//                 return -1;
-//             }
-//             __u8 *cur = buff_start + offset;
-//             if ((void*)(cur + 1) > end) {
-//                 return -1;
-//             }
-//             return handle_domain_compression(temp_event, cur, end);
-//         }
-//         if (label_within == 0) 
-//         {
-//             label_within = current;
-//             if (label_within == 0 || label_within > MAX_LABEL_LEN) 
-//             {
-//                 return -1;
-//             }
-//             if ((void*)(dns_payload + label_within + 1) > end) 
-//             {
-//                 return -1;
-//             }
-//             current = '.';
-//         }
-//         else 
-//         {
-//             --label_within;
 //         }
 //         temp_event->qname[i] = current;
 //         ++dns_payload;
 //     }
-
+    
 //     return 0;
 // }
 
 
 static __always_inline int parse_domain_compression(void *cursor, void *end, void *start, struct dns_event *temp_event)
 {
-    __u8 *dns_payload = cursor;
-    __u8 cur_len = temp_event->qname_len;
-    dns_payload += temp_event->qname_len;
+    __u8 *dns_payload = (__u8 *)(cursor) + temp_event->qname_len;
 
     if ((void *)(dns_payload + 2) > end) 
     {
         return -1;
     }
 
-    __u16 ptr_value = (*dns_payload);
-    ptr_value <<= 8;
+    __u16 offset = bpf_ntohs(((*dns_payload) << 8) | *(dns_payload + 1)) & 0x3FFF;
+    if (offset > MAX_DNS_OFFSET) // force upper bound
+    {
+        return -1;
+    }
+
+    dns_payload = start;
+    dns_payload += offset;
+    if ((void*)(dns_payload) > end) 
+    {
+        return -1;
+    }
+
+    __u8 label_within = 0;
+    #pragma unroll
+    for (int i = temp_event->qname_len; i < MAX_QNAME_LEN; ++i) 
+    {
+        if ((void*)(dns_payload + 1) > end) 
+        {
+            return -1;
+        }   
+        __u8 current = *dns_payload;
+        // if (current == 0) 
+        // {   
+            // temp_event->qname_len = i + 1;
+            // break;
+        // }
+        // if (label_within == 0) 
+        // {
+        //     label_within = current;
+        //     if (label_within == 0 || label_within > MAX_LABEL_LEN) 
+        //     {
+        //         return -1;
+        //     }
+        //     if ((void*)(dns_payload + label_within + 1) > end) 
+        //     {
+        //         return -1;
+        //     }
+        //     current = '.';
+        // }
+        // else 
+        // {
+        //     --label_within;
+        // }
+        // temp_event->qname[i] = *dns_payload;
+        ++dns_payload;
+    }
+
     return 0;
 }
 

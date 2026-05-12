@@ -44,7 +44,6 @@ int xdp_watch(struct xdp_md *ctx) { // Supports VLANs and default eth frame
     if (cursor >= frame_end) {
         return XDP_PASS;
     }
-    // IPv4 or IPv6
     int l4_proto = 0;
     if (ip_type == ETH_P_IP || ip_type == ETH_P_IPV6) 
     {
@@ -105,6 +104,12 @@ int xdp_watch(struct xdp_md *ctx) { // Supports VLANs and default eth frame
     {
         is_dns = parse_tcp_for_dns(&cursor, frame_end, &payload_len);
     }
+    // if (l4_proto != IPPROTO_UDP) 
+    // {
+    //     return XDP_PASS;
+    // } 
+    // is_dns = parse_udp_for_dns(&cursor, frame_end, &payload_len);
+
     if (is_dns != DNS_YES) {
         return XDP_PASS;
     }
@@ -124,21 +129,15 @@ int xdp_watch(struct xdp_md *ctx) { // Supports VLANs and default eth frame
     if (dns_type == DNS_RESPONSE_NXDOMAIN) 
     {
         increment_metric(2); 
-    } 
-    if (cursor >= frame_end) 
-    {
-        return XDP_PASS;
     }
-
     __u32 key = 0;
     __u32 *max_size = bpf_map_lookup_elem(&config_map, &key);
-    
     if (max_size && payload_len > *max_size) {
         increment_metric(1); 
         return XDP_DROP;
     }
-
     increment_metric(0);
+     
 
     struct dns_event *temp_event = bpf_map_lookup_elem(&scratchpad_map, &key);
     if (!temp_event) 
@@ -146,12 +145,16 @@ int xdp_watch(struct xdp_md *ctx) { // Supports VLANs and default eth frame
         return XDP_PASS;
     }
     int status = parse_domain_filtered(cursor, frame_end, temp_event);
-    status = (status == 1) 
-    ? parse_domain_compression(cursor, frame_end, dns_start, temp_event)
-    : status;
-    if (status < 0) {
+    if (status > 0) {
+        status = (status == 1) 
+        ? parse_domain_compression(cursor, frame_end, dns_start, temp_event)
+        : status;
+    }
+    if (status < 0) 
+    {
         return XDP_PASS;
     }
+    
 
     
     __u8 qname_len = temp_event->qname_len & 0xFF; 
