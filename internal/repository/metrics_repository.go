@@ -11,7 +11,7 @@ import (
 
 const (
 	passKey uint32 = iota
-	dropKey
+	anomalySizeKey
 	NXDomainKey
 )
 
@@ -31,7 +31,7 @@ func (r *bpfMetricsRepository) GetMetrics(ctx context.Context) (domain.BpfMetric
 		return domain.BpfMetrics{}, err
 	}
 
-	aggDropped, err := getDropped(r)
+	aggAnomalySize, err := getAnomalySize(r)
 	if err != nil {
 		return domain.BpfMetrics{}, err
 	}
@@ -42,9 +42,9 @@ func (r *bpfMetricsRepository) GetMetrics(ctx context.Context) (domain.BpfMetric
 	}
 
 	return domain.BpfMetrics{
-		Passed:   aggPassed,
-		Dropped:  aggDropped,
-		NXDomain: aggNXDomain,
+		Passed:      aggPassed,
+		AnomalySize: aggAnomalySize,
+		NXDomain:    aggNXDomain,
 	}, nil
 }
 
@@ -60,16 +60,16 @@ func getPassed(r *bpfMetricsRepository) (uint64, error) {
 	return aggPassed, nil
 }
 
-func getDropped(r *bpfMetricsRepository) (uint64, error) {
+func getAnomalySize(r *bpfMetricsRepository) (uint64, error) {
 	perCPUValues := make([]uint64, ebpf.MustPossibleCPU())
-	if err := r.maps.MetricsMap.Lookup(dropKey, &perCPUValues); err != nil {
-		return 0, fmt.Errorf("failed to lookup dropped metrics (key 1): %w", err)
+	if err := r.maps.MetricsMap.Lookup(anomalySizeKey, &perCPUValues); err != nil {
+		return 0, fmt.Errorf("failed to lookup anomaly size metrics (key 1): %w", err)
 	}
-	var aggDropped uint64
+	var aggAnomalySize uint64
 	for _, val := range perCPUValues {
-		aggDropped += val
+		aggAnomalySize += val
 	}
-	return aggDropped, nil
+	return aggAnomalySize, nil
 }
 
 func getNXDomain(r *bpfMetricsRepository) (uint64, error) {

@@ -3,10 +3,16 @@
 
 #include "./linux/vmlinux.h"
 #include "./linux/if_ether.h"
+
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
+
 #include "./include/dns_parse.h"
+#include "./include/dns_parse_helper.h"
+
 #include "./include/maps.h"
+#include "./include/shared_maps.h"
+
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -21,7 +27,7 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, 3); // 0: passed, 1: dropped, 2: NXDOMAIN;
+    __uint(max_entries, 3); // 0: passed, 1: anomaly_size, 2: NXDOMAIN;
     __type(key, __u32);
     __type(value, __u64); // Счетчик пакетов
 } metrics_map SEC(".maps");
@@ -77,21 +83,6 @@ int xdp_watch(struct xdp_md *ctx) { // Supports VLANs and default eth frame
     __u16 payload_len = 0;
     int is_dns = 0;
     // Dissect only DNS packets, pass the rest
-    // if (l4_proto == IPPROTO_UDP || l4_proto == IPPROTO_TCP) 
-    // {
-    //     if (l4_proto == IPPROTO_UDP) 
-    //     {
-    //         is_dns = parse_udp_for_dns(&cursor, frame_end, &payload_len);
-    //     } 
-    //     else 
-    //     {
-    //         is_dns = parse_tcp_for_dns(&cursor, frame_end, &payload_len);
-    //     }
-    // } 
-    // else 
-    // {
-    //     return XDP_PASS;
-    // }
     if (l4_proto != IPPROTO_UDP && l4_proto != IPPROTO_TCP) 
     {
         return XDP_PASS;
@@ -104,11 +95,6 @@ int xdp_watch(struct xdp_md *ctx) { // Supports VLANs and default eth frame
     {
         is_dns = parse_tcp_for_dns(&cursor, frame_end, &payload_len);
     }
-    // if (l4_proto != IPPROTO_UDP) 
-    // {
-    //     return XDP_PASS;
-    // } 
-    // is_dns = parse_udp_for_dns(&cursor, frame_end, &payload_len);
 
     if (is_dns != DNS_YES) {
         return XDP_PASS;
@@ -119,10 +105,12 @@ int xdp_watch(struct xdp_md *ctx) { // Supports VLANs and default eth frame
 
     __u8 *dns_start = cursor;
     int dns_type = parse_dns(&cursor, frame_end);
-    if (dns_type == DNS_UNKNOWN) {
+    if (dns_type == DNS_UNKNOWN) 
+    {
         return XDP_PASS;
     }
-    if (cursor >= frame_end) {
+    if (cursor >= frame_end) 
+    {
         return XDP_PASS;
     }
 
@@ -132,46 +120,59 @@ int xdp_watch(struct xdp_md *ctx) { // Supports VLANs and default eth frame
     }
     __u32 key = 0;
     __u32 *max_size = bpf_map_lookup_elem(&config_map, &key);
-    if (max_size && payload_len > *max_size) {
+    if (max_size && payload_len > *max_size) 
+    {
         increment_metric(1); 
-        return XDP_DROP;
+        return XDP_PASS;
     }
     increment_metric(0);
      
 
-    struct dns_event *temp_event = bpf_map_lookup_elem(&scratchpad_map, &key);
+    __u8 *buff = (__u8 *)(cursor); // take a buff of cursor to 
+    // make clear the whole domain name shift procedure
+    struct dns_event_xdp *temp_event = bpf_map_lookup_elem(&scratchpad_map, &key);
     if (!temp_event) 
     {
         return XDP_PASS;
     }
-    int status = parse_domain_filtered(cursor, frame_end, temp_event);
-    if (status > 0) {
+    int status = parse_domain_filtered(cursor, frame_end, &temp_event->event);
+    if (status > 0) 
+    {
         status = (status == 1) 
-        ? parse_domain_compression(cursor, frame_end, dns_start, temp_event)
+        ? parse_domain_compression(cursor, frame_end, dns_start, &temp_event->event)
         : status;
+        buff += 2;
     }
     if (status < 0) 
     {
         return XDP_PASS;
     }
-    
-
-    
-    __u8 qname_len = temp_event->qname_len & 0xFF; 
+    //3www0x0C
+    //6google3com\0
+    __u8 qname_len = temp_event->event.qname_len & 0xFF + temp_event->event.compression_len; 
     if (qname_len == 0 || qname_len > MAX_QNAME_LEN)
     {
         return XDP_PASS;
     }
-    temp_event->dns_type = dns_type;
-    temp_event->qname[qname_len - 1] = 0;
+    temp_event->status = dns_type;
+    temp_event->event.qname[qname_len - 1] = 0;
+ 
+    struct hash_ctx hctx = {
+        .prime = 0x100000001b3ULL,
+        .event = &temp_event->event,
+        .hash = 0xcbf29ce484222325ULL,
+    };
+    bpf_loop(qname_len, hash_dns_name, &hctx, 0);
 
-    __u8 *buff = (__u8 *)(cursor) + temp_event->qname_len;
+    // bpf_map_lookup_elem(&dns_hash_map, &key); // Just to make sure that map is loaded and ready for user-space reading, so we can be sure that events will be delivered without significant delay
+    bpf_printk("DNS event: qname=%s, type=%d", temp_event->event.qname, dns_type);
+
+    buff += temp_event->event.qname_len;
     if ((void*)(buff) >= frame_end) 
     {
         return XDP_PASS;
     }
     cursor = (void*)(buff);
-    
 
     return XDP_PASS;
  }

@@ -7,8 +7,8 @@
 #include <string.h>
 #include "./maps.h"
 
+#define MAX_QNAME_LEN_CLOSET_TWO 256
 #define MAX_QNAME_LEN 255
-#define QNAME_LEN 128
 #define MAX_LABEL_COUNT 127
 #define MAX_LABEL_LEN 63 
 #define MAX_DNS_OFFSET 4096 
@@ -57,11 +57,16 @@ struct dnshdr {
 };
 
 struct dns_event {
-    __u16 dns_type;
     __u16 qname_len;
-    __u8 qname[MAX_QNAME_LEN];
+    __u8 qname[MAX_QNAME_LEN_CLOSET_TWO]; //256 
     __u8 compression_len;
 };
+
+struct dns_event_xdp {
+    struct dns_event event; 
+    __u64 latency_ns;
+    __u8 status;
+}; // 264 + 8 + 1 + 7(padding) OR 260 + 8 + 1 + 3
 
 // static __always_inline void increment_metric(__u32 index) {
 //     __u64 *value = bpf_map_lookup_elem(&metrics_map, &index);
@@ -80,30 +85,6 @@ static __always_inline int parse_eth(void **cursor, void const *end) {
     // Parse type
     long eth_type = bpf_ntohs(eth->h_proto);
     *cursor = (void *)(eth + 1); 
-
-    // 802.1AD 
-    // if (eth_type == ETH_P_8021AD) {
-    //     struct vlan_hdr *ad = *cursor;
-        
-    //     if ((void *)(ad + 1) > end) {
-    //         return -1; // frame corrupted
-    //     }
-    //     eth_type = bpf_ntohs(ad->h_vlan_encapsulated_proto);
-
-    //     *cursor = (void *)(ad + 1);
-    // }  
-
-    // // 802.1Q 
-    // if (eth_type == ETH_P_8021Q) {
-    //     struct vlan_hdr *ad = *cursor;
-        
-    //     if ((void *)(ad + 1) > end) {
-    //         return -1; // frame corrupted
-    //     }
-    //     eth_type = bpf_ntohs(ad->h_vlan_encapsulated_proto);
-        
-    //     *cursor = (void *)(ad + 1);
-    // }
 
     // IPv4 or IPv6
     return eth_type;
@@ -286,97 +267,99 @@ static __always_inline int parse_dns(void **cursor, void *end) {
 }
 
 
+struct domain_compression_ctx {
+    void             *end;
+    __u8             *payload;
+    struct dns_event *event;
+    int               result;
+    __u8              label_within;
+};
 
+static int domain_compression_cb(__u32 index, void *ctx_ptr)
+{
+    struct domain_compression_ctx *lctx = ctx_ptr;
 
-// static __always_inline int parse_domain(void *start, void **cursor, void *end) 
-// {
-//     struct dns_event *temp_event = bpf_map_lookup_elem(&scratchpad_map, &(const __u32){0});
-//     if (!temp_event) 
-//     {
-//         return -1;
-//     }
-//     temp_event->qname_len = 0;
+    __u8 *current = lctx->payload; 
+    if ((void *)(current + 1) > lctx->end)
+    {
+        lctx->result = -1;
+        return 1;
+    }
 
-//     __u8* dns_payload = *cursor;
+    if (*current == 0)
+    {
+        lctx->event->compression_len = index;
+        lctx->result = 0;
+        return 1; // stop
+    }
+    if (lctx->label_within == 0)
+    {
+        if (*current > MAX_LABEL_LEN || *current == 0)
+        {
+            lctx->result = -1;
+            return 1;
+        }
+        lctx->label_within = *current;
+        *current = '.';
+    }
+    else
+    {
+        lctx->label_within--;
+    }
 
-//     #pragma unroll
-//     for (int i = 0; i < MAX_QNAME_LEN; ++i) 
-//     {
-//         if ((void*)(dns_payload + 1) > end) 
-//         {
-//             return -1;
-//         }
-//         __u8 current = *dns_payload;
-//         if (current == 0) {
-//             temp_event->qname_len = i + 1;
-//             break;
-//         }
-//         temp_event->qname[i] = current;
-//         ++dns_payload;
-//     }
-    
-//     return 0;
-// }
+    // Теперь верификатор видит: qname_idx < MAX_QNAME_LEN — запись безопасна
+    if (index + lctx->event->qname_len >= MAX_QNAME_LEN) 
+    {
+        lctx->result = -1;
+        return 1;
+    }
+    lctx->event->qname[lctx->event->qname_len + index] = *current;
+    ++lctx->payload;
 
+    return 0; // continue
+}
 
-static __always_inline int parse_domain_compression(void *cursor, void *end, void *start, struct dns_event *temp_event)
+static __always_inline int parse_domain_compression(
+    void *cursor, 
+    void *end, 
+    void *start, 
+    struct dns_event *temp_event)
 {
     __u8 *dns_payload = (__u8 *)(cursor) + temp_event->qname_len;
 
-    if ((void *)(dns_payload + 2) > end) 
+    if ((void *)(dns_payload + 2) > end)
+    {
+        return -1;
+    }
+        
+    __u16 offset = (((__u16)*dns_payload) << 8 | *(dns_payload + 1)) & 0x3FFF;
+    if (offset < sizeof(struct dnshdr) || offset > MAX_DNS_OFFSET)
     {
         return -1;
     }
 
-    __u16 offset = bpf_ntohs(((*dns_payload) << 8) | *(dns_payload + 1)) & 0x3FFF;
-    if (offset > MAX_DNS_OFFSET) // force upper bound
+    dns_payload = (__u8 *)start + offset;
+    if ((void *)(dns_payload + 1) > end)
+    {
+        return -1;
+    }
+        
+    if (temp_event->qname_len >= MAX_QNAME_LEN)
     {
         return -1;
     }
 
-    dns_payload = start;
-    dns_payload += offset;
-    if ((void*)(dns_payload) > end) 
-    {
-        return -1;
-    }
+    struct domain_compression_ctx lctx = {
+        .end         = end,
+        .payload     = dns_payload,
+        .event       = temp_event,
+        .result      = -1,
+        .label_within = 0,
+    };
 
-    __u8 label_within = 0;
-    #pragma unroll
-    for (int i = temp_event->qname_len; i < MAX_QNAME_LEN; ++i) 
-    {
-        if ((void*)(dns_payload + 1) > end) 
-        {
-            return -1;
-        }   
-        __u8 current = *dns_payload;
-        // if (current == 0) 
-        // {   
-            // temp_event->qname_len = i + 1;
-            // break;
-        // }
-        // if (label_within == 0) 
-        // {
-        //     label_within = current;
-        //     if (label_within == 0 || label_within > MAX_LABEL_LEN) 
-        //     {
-        //         return -1;
-        //     }
-        //     if ((void*)(dns_payload + label_within + 1) > end) 
-        //     {
-        //         return -1;
-        //     }
-        //     current = '.';
-        // }
-        // else 
-        // {
-        //     --label_within;
-        // }
-        // temp_event->qname[i] = *dns_payload;
-        ++dns_payload;
-    }
+    bpf_loop(MAX_QNAME_LEN - temp_event->qname_len, domain_compression_cb, &lctx, 0);
 
-    return 0;
+    return lctx.result;
 }
 
 static __always_inline int parse_domain_filtered(void *cursor, void *end, struct dns_event *temp_event) 

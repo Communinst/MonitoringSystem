@@ -40,7 +40,7 @@ func NewMetricMappings() []domain.MetricMapping {
 			Extract: func(m *domain.BpfMetrics) []domain.MetricPoint {
 				return []domain.MetricPoint{
 					{Value: float64(m.Passed), Labels: []string{"passed"}},
-					{Value: float64(m.Dropped), Labels: []string{"dropped"}},
+					{Value: float64(m.AnomalySize), Labels: []string{"anomaly_size"}},
 					{Value: float64(m.NXDomain), Labels: []string{"nxdomain"}},
 				}
 			},

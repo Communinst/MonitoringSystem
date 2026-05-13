@@ -13,12 +13,19 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type BpfDnsEvent struct {
-	_              structs.HostLayout
-	DnsType        uint16
-	QnameLen       uint16
-	Qname          [255]uint8
-	CompressionLen uint8
+type BpfDnsEventXdp struct {
+	_     structs.HostLayout
+	Event struct {
+		_              structs.HostLayout
+		QnameLen       uint16
+		Qname          [256]uint8
+		CompressionLen uint8
+		_              [1]byte
+	}
+	_         [4]byte
+	LatencyNs uint64
+	Status    uint8
+	_         [7]byte
 }
 
 // LoadBpf returns the embedded CollectionSpec for Bpf.
@@ -71,6 +78,7 @@ type BpfProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfMapSpecs struct {
 	ConfigMap     *ebpf.MapSpec `ebpf:"config_map"`
+	DnsHashMap    *ebpf.MapSpec `ebpf:"dns_hash_map"`
 	MetricsMap    *ebpf.MapSpec `ebpf:"metrics_map"`
 	ScratchpadMap *ebpf.MapSpec `ebpf:"scratchpad_map"`
 }
@@ -102,6 +110,7 @@ func (o *BpfObjects) Close() error {
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfMaps struct {
 	ConfigMap     *ebpf.Map `ebpf:"config_map"`
+	DnsHashMap    *ebpf.Map `ebpf:"dns_hash_map"`
 	MetricsMap    *ebpf.Map `ebpf:"metrics_map"`
 	ScratchpadMap *ebpf.Map `ebpf:"scratchpad_map"`
 }
@@ -109,6 +118,7 @@ type BpfMaps struct {
 func (m *BpfMaps) Close() error {
 	return _BpfClose(
 		m.ConfigMap,
+		m.DnsHashMap,
 		m.MetricsMap,
 		m.ScratchpadMap,
 	)
