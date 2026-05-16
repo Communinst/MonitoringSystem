@@ -18,17 +18,15 @@ spec:
       labels:
         app: dns-monitor
     spec:
-      # КРИТИЧНО 1: Позволяет поду видеть физические интерфейсы хоста (узла)
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       containers:
       - name: ebpfdns
         image: privatej0ker/dns-monitor:latest
         imagePullPolicy: Always
-        # env:
-        # - name: "HookIfaceName"
-        #   value: "enp0s3" # Передаем имя интерфейса в Go-код
         securityContext:
+          seccompProfile:
+            type: Unconfined
           capabilities:
             add:
               - BPF             # Для загрузки eBPF

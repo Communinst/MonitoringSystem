@@ -17,15 +17,27 @@ type BpfDnsEventXdp struct {
 	_     structs.HostLayout
 	Event struct {
 		_              structs.HostLayout
-		QnameLen       uint16
+		QnameLen       uint8
 		Qname          [256]uint8
 		CompressionLen uint8
-		_              [1]byte
 	}
-	_         [4]byte
+	_         [6]byte
 	LatencyNs uint64
 	Status    uint8
 	_         [7]byte
+}
+
+type BpfHashKey struct {
+	_    structs.HostLayout
+	Hash uint64
+	TXID uint16
+	IpV  uint16
+	Ip   struct {
+		_    structs.HostLayout
+		Ipv4 uint32
+		_    [12]byte
+	}
+	_ [4]byte
 }
 
 // LoadBpf returns the embedded CollectionSpec for Bpf.
@@ -70,17 +82,22 @@ type BpfSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfProgramSpecs struct {
-	XdpWatch *ebpf.ProgramSpec `ebpf:"xdp_watch"`
+	TcDnsEgress  *ebpf.ProgramSpec `ebpf:"tc_dns_egress"`
+	TcDnsIngress *ebpf.ProgramSpec `ebpf:"tc_dns_ingress"`
+	XdpWatch     *ebpf.ProgramSpec `ebpf:"xdp_watch"`
 }
 
 // BpfMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfMapSpecs struct {
-	ConfigMap     *ebpf.MapSpec `ebpf:"config_map"`
-	DnsHashMap    *ebpf.MapSpec `ebpf:"dns_hash_map"`
-	MetricsMap    *ebpf.MapSpec `ebpf:"metrics_map"`
-	ScratchpadMap *ebpf.MapSpec `ebpf:"scratchpad_map"`
+	ConfigMap              *ebpf.MapSpec `ebpf:"config_map"`
+	DnsEventRingbuf        *ebpf.MapSpec `ebpf:"dns_event_ringbuf"`
+	DnsHashMap             *ebpf.MapSpec `ebpf:"dns_hash_map"`
+	TcIngressScratchpadMap *ebpf.MapSpec `ebpf:"tc_ingress_scratchpad_map"`
+	TcMetricsMap           *ebpf.MapSpec `ebpf:"tc_metrics_map"`
+	XdpMetricsMap          *ebpf.MapSpec `ebpf:"xdp_metrics_map"`
+	XdpScratchpadMap       *ebpf.MapSpec `ebpf:"xdp_scratchpad_map"`
 }
 
 // BpfVariableSpecs contains global variables before they are loaded into the kernel.
@@ -109,18 +126,24 @@ func (o *BpfObjects) Close() error {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfMaps struct {
-	ConfigMap     *ebpf.Map `ebpf:"config_map"`
-	DnsHashMap    *ebpf.Map `ebpf:"dns_hash_map"`
-	MetricsMap    *ebpf.Map `ebpf:"metrics_map"`
-	ScratchpadMap *ebpf.Map `ebpf:"scratchpad_map"`
+	ConfigMap              *ebpf.Map `ebpf:"config_map"`
+	DnsEventRingbuf        *ebpf.Map `ebpf:"dns_event_ringbuf"`
+	DnsHashMap             *ebpf.Map `ebpf:"dns_hash_map"`
+	TcIngressScratchpadMap *ebpf.Map `ebpf:"tc_ingress_scratchpad_map"`
+	TcMetricsMap           *ebpf.Map `ebpf:"tc_metrics_map"`
+	XdpMetricsMap          *ebpf.Map `ebpf:"xdp_metrics_map"`
+	XdpScratchpadMap       *ebpf.Map `ebpf:"xdp_scratchpad_map"`
 }
 
 func (m *BpfMaps) Close() error {
 	return _BpfClose(
 		m.ConfigMap,
+		m.DnsEventRingbuf,
 		m.DnsHashMap,
-		m.MetricsMap,
-		m.ScratchpadMap,
+		m.TcIngressScratchpadMap,
+		m.TcMetricsMap,
+		m.XdpMetricsMap,
+		m.XdpScratchpadMap,
 	)
 }
 
@@ -134,11 +157,15 @@ type BpfVariables struct {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfPrograms struct {
-	XdpWatch *ebpf.Program `ebpf:"xdp_watch"`
+	TcDnsEgress  *ebpf.Program `ebpf:"tc_dns_egress"`
+	TcDnsIngress *ebpf.Program `ebpf:"tc_dns_ingress"`
+	XdpWatch     *ebpf.Program `ebpf:"xdp_watch"`
 }
 
 func (p *BpfPrograms) Close() error {
 	return _BpfClose(
+		p.TcDnsEgress,
+		p.TcDnsIngress,
 		p.XdpWatch,
 	)
 }

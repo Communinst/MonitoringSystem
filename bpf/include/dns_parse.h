@@ -6,6 +6,7 @@
 #include <bpf/bpf_endian.h>
 #include <string.h>
 #include "./maps.h"
+#include "./shared_maps.h"
 
 #define MAX_QNAME_LEN_CLOSET_TWO 256
 #define MAX_QNAME_LEN 255
@@ -13,6 +14,7 @@
 #define MAX_LABEL_LEN 63 
 #define MAX_DNS_OFFSET 4096 
 #define DNS_PORT 53
+#define VXLAN_PORT 4789
 
 
 enum packet_status {
@@ -30,10 +32,15 @@ enum is_DNS
 enum dns_packet_type
 {
     DNS_UNKNOWN = -1,
-    DNS_QUERY = 0,
-    DNS_RESPONSE_OK = 1,
-    DNS_RESPONSE_NXDOMAIN = 2,
-    DNS_RESPONSE_OTHER = 3,
+    NOERROR = 0,
+    FORMERR = 1,
+    SERVFAIL = 2,
+    NXDOMAIN = 3,
+    NOTIMP = 4,
+    REFUSED = 5,
+    DNS_PACKET_TOTAL_TYPES = 6,
+    DNS_RESPONSE_OTHER = 7,
+    DNS_QUERY = 8,
 };
 
 enum ip_frag {
@@ -47,6 +54,11 @@ enum label_status {
     LABEL_DONE = 1,
 };
 
+struct vxlanhdr {
+    __be32 vx_flags;
+    __be32 vx_vni;
+};
+
 struct dnshdr {
     __u16 id;
     __u16 flags;
@@ -57,7 +69,7 @@ struct dnshdr {
 };
 
 struct dns_event {
-    __u16 qname_len;
+    __u8 qname_len;
     __u8 qname[MAX_QNAME_LEN_CLOSET_TWO]; //256 
     __u8 compression_len;
 };
@@ -67,6 +79,7 @@ struct dns_event_xdp {
     __u64 latency_ns;
     __u8 status;
 }; // 264 + 8 + 1 + 7(padding) OR 260 + 8 + 1 + 3
+
 
 // static __always_inline void increment_metric(__u32 index) {
 //     __u64 *value = bpf_map_lookup_elem(&metrics_map, &index);
@@ -91,7 +104,7 @@ static __always_inline int parse_eth(void **cursor, void const *end) {
 }
 
 
-static __always_inline int parse_ip_v4 (void **cursor, void const *end) {
+static __always_inline int parse_ip_v4 (void **cursor, void const *end, __be32 *ip_v) {
     struct iphdr *ip = *cursor;
 
     if ((void*)(ip + 1) > end) {
@@ -104,6 +117,7 @@ static __always_inline int parse_ip_v4 (void **cursor, void const *end) {
     if (hdr_len < 20) {
         return CORRUPTED;
     }
+    *ip_v = ip->saddr;
     
     // Check if this is a fragment (and NOT the first fragment)
     // frag_off & IP_OFFSET (0x1FFF)
@@ -121,7 +135,7 @@ static __always_inline int parse_ip_v4 (void **cursor, void const *end) {
     return ip->protocol;
 }
 
-static __always_inline int parse_ip_v6(void **cursor, void const *end) {
+static __always_inline int parse_ip_v6(void **cursor, void const *end, __be32 ip_v[4], const __u8 ip_v_byte_size) {
     struct ipv6hdr *ipv6 = *cursor;
 
     if ((void*)(ipv6 + 1) > end) {
@@ -130,7 +144,7 @@ static __always_inline int parse_ip_v6(void **cursor, void const *end) {
     if (ipv6->version != 6) {
         return CORRUPTED;
     } 
-    
+    __builtin_memcpy(ip_v, &ipv6->saddr, ip_v_byte_size);
     int nexthdr = ipv6->nexthdr;
     void *buf_cursor = (void *)(ipv6 + 1);
 
@@ -239,31 +253,26 @@ static __always_inline int parse_tcp_for_dns(void **cursor, void *end, __u16 *pa
     
 }
 
-static __always_inline int parse_dns(void **cursor, void *end) {
+static __always_inline int parse_dns(void **cursor, void *end, __u16 *txid) {
     struct dnshdr *dns = *cursor;
     if ((void*)(dns + 1) > end) {
         return DNS_UNKNOWN;
     }
 
     __u16 flags = bpf_ntohs(dns->flags);
-    int is_response = (flags >> 15) & 1;
-    if (!is_response) {
-        *cursor = (void*)(dns + 1); 
+    __u8 qr    = (flags >> 15) & 1;
+    __u8 rcode = flags & 0x0F;
+    *txid = bpf_ntohs(dns->id);
+    *cursor = (void*)(dns + 1);
+
+    if (!qr) {
         return DNS_QUERY;
     }
 
-    int rcode = flags & 0x0F;
-    *cursor = (void*)(dns + 1);
-
-    if (rcode == 3) 
-    {
-        return DNS_RESPONSE_NXDOMAIN;
+    if (rcode >= DNS_PACKET_TOTAL_TYPES) {
+        return DNS_RESPONSE_OTHER;
     }
-    if (rcode == 0) 
-    {
-        return DNS_RESPONSE_OK;
-    }
-    return DNS_RESPONSE_OTHER;
+    return rcode; // +1 to align with DNS_PACKET_TYPE enum
 }
 
 
@@ -313,6 +322,7 @@ static int domain_compression_cb(__u32 index, void *ctx_ptr)
         lctx->result = -1;
         return 1;
     }
+
     lctx->event->qname[lctx->event->qname_len + index] = *current;
     ++lctx->payload;
 
@@ -361,6 +371,7 @@ static __always_inline int parse_domain_compression(
 
     return lctx.result;
 }
+
 
 static __always_inline int parse_domain_filtered(void *cursor, void *end, struct dns_event *temp_event) 
 {
@@ -411,3 +422,67 @@ static __always_inline int parse_domain_filtered(void *cursor, void *end, struct
     return 0;
 }
 
+static __always_inline int xdp_parse_vxlan_from_udp(
+    void **cursor,
+    void *end,
+    struct hash_key *h_key) 
+{
+    struct udphdr *udp = *cursor;
+
+    if ((void*)(udp + 1) > end) {
+        return DNS_NO;
+    }
+
+    // int src_port = bpf_ntohs(udp->source);
+    int dest_port = bpf_ntohs(udp->dest);
+    if (dest_port != VXLAN_PORT) {
+        return DNS_YES;
+    }
+
+    struct vxlanhdr *vxh = (void *)(udp + 1);
+    if ((void *)(vxh + 1) > end) return DNS_NO;
+    
+    void *buff_cursor = (void *)(vxh + 1);
+
+    int ip_type = parse_eth(&buff_cursor, end);
+    if (buff_cursor >= end) 
+    {
+        return XDP_PASS;
+    }
+
+    int l4_proto = 0;
+    struct hash_key h_key_buff = {};
+    if (ip_type == ETH_P_IP || ip_type == ETH_P_IPV6) 
+    {
+        if (ip_type == ETH_P_IP) 
+        {
+            (*h_key).ip_v = 4;
+            l4_proto = parse_ip_v4(&buff_cursor, end, &h_key_buff.ip.ipv4);
+        } 
+        else 
+        {
+            (*h_key).ip_v = 6;
+            l4_proto = parse_ip_v6(&buff_cursor, end, h_key_buff.ip.ipv6, 16);
+        }
+    } 
+    else 
+    {
+        return XDP_PASS;
+    }
+
+    // Handling subsequent fragments in XDP is extremely difficult, 
+    // so pass them. Anyway they can't contain DNS header, so we won't lose 
+    // any important information for XDP monitoring.
+    if (l4_proto < FRAG_HEAD) 
+    {
+        return XDP_PASS;
+    }
+    if (buff_cursor >= end) 
+    {
+        return XDP_PASS;
+    }
+    
+    *cursor = buff_cursor;
+    *h_key = h_key_buff;
+    return DNS_YES;
+}

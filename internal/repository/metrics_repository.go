@@ -10,9 +10,21 @@ import (
 )
 
 const (
-	passKey uint32 = iota
+	noErrorKey uint32 = iota
+	formErrKey
+	servFailKey
+	nXDomainKey
+	notImpKey
+	refusedKey
+	dNSResponseOtherKey
+	dNSQueryKey
+	passKey
 	anomalySizeKey
-	NXDomainKey
+	podRespond
+	queryToPod
+	unregisteredResponse
+	passedXdpDns
+	passedXdpQuery
 )
 
 type bpfMetricsRepository struct {
@@ -50,7 +62,7 @@ func (r *bpfMetricsRepository) GetMetrics(ctx context.Context) (domain.BpfMetric
 
 func getPassed(r *bpfMetricsRepository) (uint64, error) {
 	perCPUValues := make([]uint64, ebpf.MustPossibleCPU())
-	if err := r.maps.MetricsMap.Lookup(passKey, &perCPUValues); err != nil {
+	if err := r.maps.XdpMetricsMap.Lookup(passedXdpDns, &perCPUValues); err != nil {
 		return 0, fmt.Errorf("failed to lookup passed metrics (key 0): %w", err)
 	}
 	var aggPassed uint64
@@ -62,7 +74,7 @@ func getPassed(r *bpfMetricsRepository) (uint64, error) {
 
 func getAnomalySize(r *bpfMetricsRepository) (uint64, error) {
 	perCPUValues := make([]uint64, ebpf.MustPossibleCPU())
-	if err := r.maps.MetricsMap.Lookup(anomalySizeKey, &perCPUValues); err != nil {
+	if err := r.maps.XdpMetricsMap.Lookup(anomalySizeKey, &perCPUValues); err != nil {
 		return 0, fmt.Errorf("failed to lookup anomaly size metrics (key 1): %w", err)
 	}
 	var aggAnomalySize uint64
@@ -74,7 +86,7 @@ func getAnomalySize(r *bpfMetricsRepository) (uint64, error) {
 
 func getNXDomain(r *bpfMetricsRepository) (uint64, error) {
 	perCPUValues := make([]uint64, ebpf.MustPossibleCPU())
-	if err := r.maps.MetricsMap.Lookup(NXDomainKey, &perCPUValues); err != nil {
+	if err := r.maps.XdpMetricsMap.Lookup(nXDomainKey, &perCPUValues); err != nil {
 		return 0, fmt.Errorf("failed to lookup NXDomain metrics (key 2): %w", err)
 	}
 	var aggNXDomain uint64

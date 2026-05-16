@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -77,6 +77,44 @@ func main() {
 	}
 	defer l.Close()
 
+	// Helper function for future k8s veth attachment
+	// We will use this in the next step when processing pods.
+	attachTCToVeth := func(vethName string, objs *bpfObj.BpfObjects) ([]link.Link, error) {
+		vethIface, err := net.InterfaceByName(vethName)
+		if err != nil {
+			return nil, err
+		}
+		
+		var links []link.Link
+		
+		// Ingress (Traffic FROM pod to host)
+		tcIn, err := link.AttachTCX(link.TCXOptions{
+			Program:   objs.TcDnsIngress,
+			Attach:    ebpf.AttachTCXIngress,
+			Interface: vethIface.Index,
+		})
+		if err != nil {
+			return nil, err
+		}
+		links = append(links, tcIn)
+
+		// Egress (Traffic FROM host TO pod)
+		tcOut, err := link.AttachTCX(link.TCXOptions{
+			Program:   objs.TcDnsEgress,
+			Attach:    ebpf.AttachTCXEgress,
+			Interface: vethIface.Index,
+		})
+		if err != nil {
+			tcIn.Close()
+			return nil, err
+		}
+		links = append(links, tcOut)
+
+		return links, nil
+	}
+	// Suppress unused variable warning until k8s watcher integration
+	_ = attachTCToVeth
+
 	// Set max DNS response size in config map. High probability of rewriting
 	maxDnsSize := uint32(cfg.BPF.MaxDnsSize)
 	if err := objs.ConfigMap.Update(configMapKey, &maxDnsSize, 0); err != nil {
@@ -142,19 +180,23 @@ func prometheusSetup(svc *service.DNSMonitorService) *prometheus.Registry {
 // }
 
 func bootBPF() (bpfObj.BpfObjects, error) {
-
 	var objs bpfObj.BpfObjects
 	if err := bpfObj.LoadBpfObjects(&objs, &ebpf.CollectionOptions{
 		Programs: ebpf.ProgramOptions{
-			LogSizeStart: 256 * 1,
-			LogLevel:     ebpf.LogLevelInstruction | ebpf.LogLevelBranch,
+			LogSizeStart: 10 * 1024 * 1024,                               // 4MB — разумный старт, меньше итераций
+			LogLevel:     ebpf.LogLevelInstruction | ebpf.LogLevelBranch, // без Instruction — на порядок меньше вывода
 		},
 	}); err != nil {
-		log.Printf("Failed to load eBPF objects: %v", err)
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {
-			// Это выведет полный лог в консоль!
-			fmt.Printf("Verifier Error Log:\n%+v\n", ve)
+			// Печатаем только хвост лога — там самое важное
+			truncated := ve.Error()
+			lines := strings.Split(truncated, "\n")
+			tail := lines
+			if len(lines) > 50 {
+				tail = lines[len(lines)-50:]
+			}
+			log.Printf("Verifier error (last 50 lines):\n%s", strings.Join(tail, "\n"))
 		}
 		return bpfObj.BpfObjects{}, err
 	}
