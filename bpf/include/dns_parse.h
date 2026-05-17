@@ -72,14 +72,15 @@ struct dns_event {
     __u8 qname_len;
     __u8 qname[MAX_QNAME_LEN_CLOSET_TWO]; //256 
     __u8 compression_len;
-};
+}; //258
 
-struct dns_event_xdp {
-    struct dns_event event; 
-    __u64 latency_ns;
-    __u8 status;
-}; // 264 + 8 + 1 + 7(padding) OR 260 + 8 + 1 + 3
-
+struct dns_event_full {
+    __u64 latency_ns; // 8 
+    struct src_ip_add src_ip; // 28 - по 4 - нет
+    __u16 status; // 29 
+    struct dns_event event; // 287
+}; // 
+_Static_assert(sizeof(struct dns_event_full) == 288, "dns_event_full size mismatch");
 
 // static __always_inline void increment_metric(__u32 index) {
 //     __u64 *value = bpf_map_lookup_elem(&metrics_map, &index);
@@ -253,7 +254,7 @@ static __always_inline int parse_tcp_for_dns(void **cursor, void *end, __u16 *pa
     
 }
 
-static __always_inline int parse_dns(void **cursor, void *end, __u16 *txid) {
+static __always_inline int parse_dns(void **cursor, void *end, __u32 *txid) {
     struct dnshdr *dns = *cursor;
     if ((void*)(dns + 1) > end) {
         return DNS_UNKNOWN;
@@ -456,13 +457,13 @@ static __always_inline int xdp_parse_vxlan_from_udp(
     {
         if (ip_type == ETH_P_IP) 
         {
-            (*h_key).ip_v = 4;
-            l4_proto = parse_ip_v4(&buff_cursor, end, &h_key_buff.ip.ipv4);
+            (*h_key).src_ip.ip_v = 4;
+            l4_proto = parse_ip_v4(&buff_cursor, end, &h_key_buff.src_ip.ip.ipv4);
         } 
         else 
         {
-            (*h_key).ip_v = 6;
-            l4_proto = parse_ip_v6(&buff_cursor, end, h_key_buff.ip.ipv6, 16);
+            (*h_key).src_ip.ip_v = 6;
+            l4_proto = parse_ip_v6(&buff_cursor, end, h_key_buff.src_ip.ip.ipv6, 16);
         }
     } 
     else 

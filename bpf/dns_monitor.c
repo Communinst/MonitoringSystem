@@ -12,22 +12,39 @@
 #include "./include/maps.h"
 #include "./include/shared_maps.h"
 
+#define POD_AMOUNT_LIMIT 128
+
 
 char LICENSE[] SEC("license") = "GPL";
 
 enum metric_index {
-    dns_packet_type,
-    METRIC_PASSED = 9,
-    METRIC_ANOMALY_SIZE = 10,
-    METRIC_POD_RESPOND = 11,
-    METRIC_QUERY_TO_POD = 12,
-    METRIC_UNREGISTERED_RESPONSE = 13,
-    METRIC_PASSED_XDP_DNS = 14,
-    METRIC_PASSED_XDP_QUERY = 15,
+    METRIC_NOERROR = 0,
+    METRIC_FORMERR = 1,
+    METRIC_SERVFAIL = 2,
+    METRIC_NXDOMAIN = 3,
+    METRIC_NOTIMP = 4,
+    METRIC_REFUSED = 5,
+    METRIC_DNS_RESPONSE_OTHER = 6,
+    METRIC_DNS_QUERY = 7,
+    METRIC_PASSED = 8,
+    METRIC_ANOMALY_SIZE = 9,
+    METRIC_POD_RESPOND = 10,
+    METRIC_QUERY_TO_POD = 11,
+    METRIC_UNREGISTERED_TRAFFIC = 12,
+    METRIC_PASSED_XDP_DNS = 13,
+    METRIC_PASSED_XDP_QUERY = 14,
+    MAX_INDEX = 15,
 };
 
-static __always_inline void increment_metric(void *map, __u32 index) {
-    __u64 *value = bpf_map_lookup_elem(map, &index);
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __type(key, struct veth_key);
+    __type(value, __u64);
+    __uint(max_entries, MAX_INDEX * POD_AMOUNT_LIMIT);
+} tc_metrics_map SEC(".maps");
+
+static __always_inline void increment_metric(void *map, struct veth_key *v_key) {
+    __u64 *value = bpf_map_lookup_elem(map, v_key);
     if (value) {
         *value += 1;
     }
@@ -50,13 +67,13 @@ int tc_dns_ingress(struct __sk_buff *ctx) {
     {
         if (ip_type == ETH_P_IP) 
         {
-            h_key.ip_v = 4;
-            l4_proto = parse_ip_v4(&cursor, frame_end, &h_key.ip.ipv4);
+            h_key.src_ip.ip_v = 4;
+            l4_proto = parse_ip_v4(&cursor, frame_end, &h_key.src_ip.ip.ipv4);
         } 
         else 
         {
-            h_key.ip_v = 6;
-            l4_proto = parse_ip_v6(&cursor, frame_end, h_key.ip.ipv6, 16);
+            h_key.src_ip.ip_v = 6;
+            l4_proto = parse_ip_v6(&cursor, frame_end, h_key.src_ip.ip.ipv6, 16);
         }
     } 
     else 
@@ -112,23 +129,30 @@ int tc_dns_ingress(struct __sk_buff *ctx) {
     if (cursor >= frame_end) 
     {
         return TC_ACT_OK;
-    }
-    increment_metric(&tc_metrics_map, METRIC_PASSED);
-    if (dns_type < DNS_QUERY)
+    } 
+    struct veth_key v_key = {
+        .metric_key = METRIC_PASSED,
+        .src_ip = h_key.src_ip,
+    };
+    increment_metric(&tc_metrics_map, &v_key);
+    if (dns_type < METRIC_DNS_QUERY)
     {
-        increment_metric(&tc_metrics_map, METRIC_POD_RESPOND - 1); 
+        v_key.metric_key = METRIC_POD_RESPOND;
+        increment_metric(&tc_metrics_map, &v_key); 
     }
     else 
     {
-        increment_metric(&tc_metrics_map, DNS_QUERY - 1); 
+        v_key.metric_key = METRIC_DNS_QUERY;
+        increment_metric(&tc_metrics_map, &v_key); 
     }
 
     __u32 key = 0;
-    struct dns_event_xdp *temp_event = bpf_map_lookup_elem(&tc_ingress_scratchpad_map, &key);
+    struct dns_event_full *temp_event = bpf_map_lookup_elem(&tc_ingress_scratchpad_map, &key);
     if (!temp_event) 
     {
         return TC_ACT_OK;
     }
+    temp_event->src_ip = h_key.src_ip;
     int status = parse_domain_filtered(cursor, frame_end, &temp_event->event);
     if (status > 0) // Was the compression met?
     {
@@ -185,13 +209,13 @@ int tc_dns_egress(struct __sk_buff *ctx) {
     {
         if (ip_type == ETH_P_IP) 
         {
-            h_key.ip_v = 4;
-            l4_proto = parse_ip_v4(&cursor, frame_end, &h_key.ip.ipv4);
+            h_key.src_ip.ip_v = 4;
+            l4_proto = parse_ip_v4(&cursor, frame_end, &h_key.src_ip.ip.ipv4);
         } 
         else 
         {
-            h_key.ip_v = 6;
-            l4_proto = parse_ip_v6(&cursor, frame_end, h_key.ip.ipv6, 16);
+            h_key.src_ip.ip_v = 6;
+            l4_proto = parse_ip_v6(&cursor, frame_end, h_key.src_ip.ip.ipv6, 16);
         }
     } 
     else 
@@ -247,18 +271,29 @@ int tc_dns_egress(struct __sk_buff *ctx) {
     {
         return TC_ACT_OK;
     }
-    increment_metric(&tc_metrics_map, METRIC_PASSED);
-    if (dns_type != DNS_QUERY) 
+    struct veth_key v_key = {
+        .metric_key = METRIC_PASSED,
+        .src_ip = h_key.src_ip,
+    };
+    increment_metric(&tc_metrics_map, &v_key);
+    if (dns_type == DNS_QUERY) 
     {
-        increment_metric(&tc_metrics_map, METRIC_POD_RESPOND); 
+        v_key.metric_key = METRIC_QUERY_TO_POD;
+        increment_metric(&tc_metrics_map, &v_key); 
+    }
+    else 
+    {
+        v_key.metric_key = dns_type;
+        increment_metric(&tc_metrics_map, &v_key);
     }
 
     __u32 key = 0; 
-    struct dns_event_xdp *temp_event = bpf_ringbuf_reserve(&dns_event_ringbuf, sizeof(struct dns_event_xdp), 0);
+    struct dns_event_full *temp_event = bpf_ringbuf_reserve(&dns_event_ringbuf, sizeof(struct dns_event_full), 0);
     if (!temp_event) 
     {
         return TC_ACT_OK;
     }
+    temp_event->src_ip = h_key.src_ip;
     int status = parse_domain_filtered(cursor, frame_end, &temp_event->event);
     if (status > 0) // Was the compression met?
     {
@@ -295,7 +330,8 @@ int tc_dns_egress(struct __sk_buff *ctx) {
     if (!timestamp) 
     {
         bpf_ringbuf_discard(temp_event, 0);
-        increment_metric(&tc_metrics_map, METRIC_UNREGISTERED_RESPONSE); 
+        v_key.metric_key = METRIC_UNREGISTERED_TRAFFIC;
+        increment_metric(&tc_metrics_map, &v_key); 
     }
     else 
     {
@@ -327,13 +363,13 @@ int xdp_watch(struct xdp_md *ctx)
     {
         if (ip_type == ETH_P_IP) 
         {
-            h_key.ip_v = 4;
-            l4_proto = parse_ip_v4(&cursor, frame_end, &h_key.ip.ipv4);
+            h_key.src_ip.ip_v = 4;
+            l4_proto = parse_ip_v4(&cursor, frame_end, &h_key.src_ip.ip.ipv4);
         } 
         else 
         {
-            h_key.ip_v = 6;
-            l4_proto = parse_ip_v6(&cursor, frame_end, h_key.ip.ipv6, 16);
+            h_key.src_ip.ip_v = 6;
+            l4_proto = parse_ip_v6(&cursor, frame_end, h_key.src_ip.ip.ipv6, 16);
         }
     } 
     else 
@@ -364,10 +400,10 @@ int xdp_watch(struct xdp_md *ctx)
     }
     if (l4_proto == IPPROTO_UDP) 
     {   
-        // is_dns = xdp_parse_vxlan_from_udp(&cursor, frame_end, &h_key);
-        // if (is_dns != DNS_YES) {
-        //     return XDP_PASS;
-        // }
+        is_dns = xdp_parse_vxlan_from_udp(&cursor, frame_end, &h_key);
+        if (is_dns != DNS_YES) {
+            return XDP_PASS;
+        }
         is_dns = parse_udp_for_dns(&cursor, frame_end, &payload_len); // VXLAN expection included.
     } 
     else 
@@ -394,17 +430,63 @@ int xdp_watch(struct xdp_md *ctx)
     {
         return XDP_PASS;
     }
-    increment_metric(&xdp_metrics_map, METRIC_PASSED_XDP_DNS - 1);
+    struct veth_key v_key = {
+        .metric_key = METRIC_PASSED_XDP_DNS,
+        .src_ip = h_key.src_ip,
+    };
+    increment_metric(&xdp_metrics_map, &v_key);
     if (dns_type == DNS_QUERY) 
     {
-        increment_metric(&xdp_metrics_map, METRIC_PASSED_XDP_QUERY - 1); 
+        v_key.metric_key = METRIC_PASSED_XDP_QUERY;
+        increment_metric(&xdp_metrics_map, &v_key);
     }
     __u32 key = 0;
     __u32 *max_size = bpf_map_lookup_elem(&config_map, &key);
     if (max_size && payload_len > *max_size) 
     {
-        increment_metric(&xdp_metrics_map, METRIC_ANOMALY_SIZE); 
+        v_key.metric_key = METRIC_ANOMALY_SIZE;
+        increment_metric(&xdp_metrics_map, &v_key);
     }
+
+    // struct dns_event_full *temp_event = bpf_map_lookup_elem(&xdp_scratchpad_map, &key);
+    // if (!temp_event) 
+    // {
+    //     return XDP_PASS;
+    // }
+    // int status = parse_domain_filtered(cursor, frame_end, &temp_event->event);
+    // if (status > 0) // Was the compression met?
+    // {
+    //     status = (status == 1) 
+    //     ? parse_domain_compression(cursor, frame_end, dns_start, &temp_event->event)
+    //     : status;
+    //     cursor = (__u8 *)(cursor) + 2; // Move packet ptr for pointer size
+    // }
+    // if (status < 0) // Error occured?
+    // {
+    //     return XDP_PASS;
+    // }
+    // cursor = (__u8 *)(cursor) + temp_event->event.qname_len;
+    // __u16 qname_len = temp_event->event.qname_len + temp_event->event.compression_len & 0xFF; 
+    // // there's qname_len as a cursor shift value compession_len adds up to overall qname length 
+    // if (qname_len == 0) 
+    // {
+    //     return XDP_PASS;
+    // }
+    // temp_event->status = dns_type;
+    // temp_event->event.qname[qname_len - 1] = 0;
+
+    // struct hash_ctx hctx = 
+    // {
+    //     .prime = 0x100000001b3ULL,
+    //     .event = &temp_event->event,
+    //     .hash = 0xcbf29ce484222325ULL,
+    // };
+    // bpf_loop(qname_len, hash_dns_name, &hctx, 0);
+
+    // __u64 *timestamp = bpf_map_lookup_elem(&dns_hash_map, &key);
+    // if (!timestamp) 
+    // {
+    //     bpf_printk("XDP: DNS event: qname=%s, type=%d. UNREG.", temp_event->event.qname, dns_type);
 
     bpf_printk("XDP: DNS event: type=%d", dns_type);
 

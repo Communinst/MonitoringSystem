@@ -21,6 +21,7 @@ import (
 	"github.com/Communinst/MonitoringSystem/internal/router"
 	"github.com/Communinst/MonitoringSystem/internal/server"
 	"github.com/Communinst/MonitoringSystem/internal/service"
+	"github.com/Communinst/MonitoringSystem/internal/k8s"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
@@ -77,44 +78,6 @@ func main() {
 	}
 	defer l.Close()
 
-	// Helper function for future k8s veth attachment
-	// We will use this in the next step when processing pods.
-	attachTCToVeth := func(vethName string, objs *bpfObj.BpfObjects) ([]link.Link, error) {
-		vethIface, err := net.InterfaceByName(vethName)
-		if err != nil {
-			return nil, err
-		}
-		
-		var links []link.Link
-		
-		// Ingress (Traffic FROM pod to host)
-		tcIn, err := link.AttachTCX(link.TCXOptions{
-			Program:   objs.TcDnsIngress,
-			Attach:    ebpf.AttachTCXIngress,
-			Interface: vethIface.Index,
-		})
-		if err != nil {
-			return nil, err
-		}
-		links = append(links, tcIn)
-
-		// Egress (Traffic FROM host TO pod)
-		tcOut, err := link.AttachTCX(link.TCXOptions{
-			Program:   objs.TcDnsEgress,
-			Attach:    ebpf.AttachTCXEgress,
-			Interface: vethIface.Index,
-		})
-		if err != nil {
-			tcIn.Close()
-			return nil, err
-		}
-		links = append(links, tcOut)
-
-		return links, nil
-	}
-	// Suppress unused variable warning until k8s watcher integration
-	_ = attachTCToVeth
-
 	// Set max DNS response size in config map. High probability of rewriting
 	maxDnsSize := uint32(cfg.BPF.MaxDnsSize)
 	if err := objs.ConfigMap.Update(configMapKey, &maxDnsSize, 0); err != nil {
@@ -123,8 +86,33 @@ func main() {
 	}
 	slog.Info("Set max DNS response size", "bytes", maxDnsSize)
 
-	//
 	router := router.NewRouter(setupLayers(&objs.BpfMaps))
+
+	tcManager := bpfObj.NewTcManager(&objs)
+	defer tcManager.DetachAll()
+
+	// Initialize the Pod Metadata Cache
+	podCache := k8s.NewPodCache()
+
+	nodeName := os.Getenv("NODE_NAME")
+	podWatcher, err := k8s.NewPodWatcher(podCache, nodeName)
+	if err != nil {
+		slog.Warn("Failed to initialize k8s pod watcher, metadata enrichment disabled", "error", err)
+	} else {
+		go func() {
+			if err := podWatcher.Run(ctx); err != nil {
+				slog.Error("Pod watcher exited with error", "error", err)
+			}
+		}()
+	}
+
+	// Initialize local netlink watcher for veth connections
+	nlWatcher := k8s.NewNetlinkWatcher(tcManager)
+	go func() {
+		if err := nlWatcher.Run(ctx); err != nil {
+			slog.Error("Netlink watcher exited with error", "error", err)
+		}
+	}()
 
 	// Http server setup with graceful shutdown. High probability of rewriting
 	srvr := server.NewServer(cfg.HTTPServer.Address, router.Init(), 10*time.Second, 10*time.Second)
@@ -169,15 +157,8 @@ func prometheusSetup(svc *service.DNSMonitorService) *prometheus.Registry {
 	return reg
 }
 
-// func bootBPF() (bpfObj.BpfObjects, error) {
-
-// 	var objs bpfObj.BpfObjects
-// 	if err := bpfObj.LoadBpfObjects(&objs, nil); err != nil {
-// 		fmt.Printf("Failed to load eBPF objects: %v\n", err)
-// 		return bpfObj.BpfObjects{}, err
-// 	}
-// 	return objs, nil
-// }
+// The attachTCToVeth logic was moved to internal/bpf/TcManager
+// so it can be dynamically used by Kubernetes Informer events.
 
 func bootBPF() (bpfObj.BpfObjects, error) {
 	var objs bpfObj.BpfObjects

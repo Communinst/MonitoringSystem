@@ -13,31 +13,54 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type BpfDnsEventXdp struct {
-	_     structs.HostLayout
-	Event struct {
+type BpfDnsEventFull struct {
+	_         structs.HostLayout
+	LatencyNs uint64
+	SrcIp     struct {
+		_  structs.HostLayout
+		Ip struct {
+			_    structs.HostLayout
+			Ipv4 uint32
+			_    [12]byte
+		}
+		IpV uint32
+	}
+	Status uint16
+	Event  struct {
 		_              structs.HostLayout
 		QnameLen       uint8
 		Qname          [256]uint8
 		CompressionLen uint8
 	}
-	_         [6]byte
-	LatencyNs uint64
-	Status    uint8
-	_         [7]byte
 }
 
 type BpfHashKey struct {
-	_    structs.HostLayout
-	Hash uint64
-	TXID uint16
-	IpV  uint16
-	Ip   struct {
-		_    structs.HostLayout
-		Ipv4 uint32
-		_    [12]byte
+	_     structs.HostLayout
+	Hash  uint64
+	TXID  uint32
+	SrcIp struct {
+		_  structs.HostLayout
+		Ip struct {
+			_    structs.HostLayout
+			Ipv4 uint32
+			_    [12]byte
+		}
+		IpV uint32
 	}
-	_ [4]byte
+}
+
+type BpfVethKey struct {
+	_         structs.HostLayout
+	MetricKey uint32
+	SrcIp     struct {
+		_  structs.HostLayout
+		Ip struct {
+			_    structs.HostLayout
+			Ipv4 uint32
+			_    [12]byte
+		}
+		IpV uint32
+	}
 }
 
 // LoadBpf returns the embedded CollectionSpec for Bpf.

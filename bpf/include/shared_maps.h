@@ -1,20 +1,18 @@
 #pragma once
 #include "../linux/vmlinux.h"
+#include "maps.h"
 #include <bpf/bpf_helpers.h>
 
 #define MAX_NODE_DNS_R_P_TTL 65536
 
 
+
 struct hash_key{
     __u64 hash; // 8 - выравнивает по 8 - нет паддинга
-    __u16 TXID; // 10 - выравнивает по ближайшему кратному 2 - нет
-    __u16 ip_v; // 12 - выравнивает по ближайшему кратному 2 - нет
-    union { // 16 - выравнивание по 4 - нет
-        __be32 ipv4; 
-        __be32 ipv6[4]; 
-    } ip;
-    // 28 + 4 паддинга. Нужно явно занулять
+    __u32 TXID; // 12 - выравнивает по ближайшему кратному 2 - нет
+    struct src_ip_add src_ip; // 32
 };
+_Static_assert(sizeof(struct hash_key) == 32, "hash_key size mismatch");
 
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
