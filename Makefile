@@ -42,7 +42,11 @@ deploy: config
 	@echo "==> Applying DaemonSet and Monitoring..."
 	kubectl apply -f daemonset.yaml
 	kubectl apply -f monitoring.yaml
-	helm upgrade prom-stack prometheus-community/kube-prometheus-stack -n monitoring -f prom-values.yaml --timeout 10m0s
+	kubectl apply -f rbac.yaml
+
+helm-deploy:
+	helm upgrade prom-stack prometheus-community/kube-prometheus-stack \
+		-n monitoring -f prom-values.yaml --timeout 10m0s
 
 restart:
 	@echo "==> Restarting DaemonSet..."
@@ -63,9 +67,8 @@ run-local: bpf-generate
 	go build -o bin/dns-monitor ./cmd
 	sudo ./bin/dns-monitor
 
-dev: push deploy restart logs
-dev-force: bpf-generate push clean deploy restart logs
-dev-test: bpf-generate push clean deploy wait-restart logs
+dev: bpf-generate push clean deploy wait-restart logs
+dev-new-prom: bpf-generate push clean deploy helm-deploy wait-restart logs
 dev-ebpf: bpf-generate push restart logs
 
 # Полная очистка

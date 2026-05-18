@@ -14,9 +14,10 @@ import (
 )
 
 type BpfDnsEventFull struct {
-	_         structs.HostLayout
-	LatencyNs uint64
-	SrcIp     struct {
+	_           structs.HostLayout
+	LatencyNs   uint64
+	TimestampNs uint64
+	SrcIp       struct {
 		_  structs.HostLayout
 		Ip struct {
 			_    structs.HostLayout
@@ -32,6 +33,16 @@ type BpfDnsEventFull struct {
 		Qname          [256]uint8
 		CompressionLen uint8
 	}
+	DstIp struct {
+		_  structs.HostLayout
+		Ip struct {
+			_    structs.HostLayout
+			Ipv4 uint32
+			_    [12]byte
+		}
+		IpV uint32
+	}
+	Qtype uint32
 }
 
 type BpfHashKey struct {

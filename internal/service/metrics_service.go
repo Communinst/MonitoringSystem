@@ -18,7 +18,7 @@ func NewBpfMetricsService(repo repository.BpfMetricsRepositoryIface) BpfMetricsS
 	}
 }
 
-// фоновый воркер, который мы запустим в main.go
+
 func (s *bpfMetricsService) GetMetrics(ctx context.Context) (domain.BpfMetrics, error) {
 	c, cancel := context.WithTimeout(ctx, time.Second*5)
 	defer cancel()

@@ -40,7 +40,7 @@ func (c *PrometheusCollector) Collect(ch chan<- prometheus.Metric) {
 
 	metrics, err := c.svc.GetMetrics(ct)
 	if err != nil {
-		return // или логирование
+		return 
 	}
 	for _, mapping := range c.mappings {
 		points := mapping.Extract(&metrics)

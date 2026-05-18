@@ -10,14 +10,14 @@ import (
 	"github.com/cilium/ebpf/link"
 )
 
-// TcManager manages dynamic attachment of TC eBPF programs to veth interfaces
+
 type TcManager struct {
 	mu    sync.Mutex
 	objs  *BpfObjects
 	links map[string][]link.Link // map[vethName]links
 }
 
-// NewTcManager creates a new manager for TC eBPF programs
+
 func NewTcManager(objs *BpfObjects) *TcManager {
 	return &TcManager{
 		objs:  objs,
@@ -25,13 +25,12 @@ func NewTcManager(objs *BpfObjects) *TcManager {
 	}
 }
 
-// AttachToVeth attaches TC Ingress and Egress to a specific veth interface
+
 func (m *TcManager) AttachToVeth(vethName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if _, exists := m.links[vethName]; exists {
-		// Already attached
 		return nil
 	}
 
@@ -42,7 +41,7 @@ func (m *TcManager) AttachToVeth(vethName string) error {
 
 	var attachedLinks []link.Link
 
-	// Ingress (Traffic FROM pod to host)
+
 	tcIn, err := link.AttachTCX(link.TCXOptions{
 		Program:   m.objs.TcDnsIngress,
 		Attach:    ebpf.AttachTCXIngress,
@@ -53,7 +52,7 @@ func (m *TcManager) AttachToVeth(vethName string) error {
 	}
 	attachedLinks = append(attachedLinks, tcIn)
 
-	// Egress (Traffic FROM host TO pod)
+
 	tcOut, err := link.AttachTCX(link.TCXOptions{
 		Program:   m.objs.TcDnsEgress,
 		Attach:    ebpf.AttachTCXEgress,
@@ -71,7 +70,7 @@ func (m *TcManager) AttachToVeth(vethName string) error {
 	return nil
 }
 
-// DetachFromVeth detaches TC programs from a specific veth interface
+
 func (m *TcManager) DetachFromVeth(vethName string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -88,7 +87,6 @@ func (m *TcManager) DetachFromVeth(vethName string) {
 	slog.Info("Successfully detached TC from veth", "veth", vethName)
 }
 
-// DetachAll safely closes all tracked TC links
 func (m *TcManager) DetachAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -16,12 +16,12 @@ import (
 	bpfObj "github.com/Communinst/MonitoringSystem/internal/bpf"
 	"github.com/Communinst/MonitoringSystem/internal/config"
 	"github.com/Communinst/MonitoringSystem/internal/handler"
+	"github.com/Communinst/MonitoringSystem/internal/k8s"
 	prom "github.com/Communinst/MonitoringSystem/internal/prometheus"
 	"github.com/Communinst/MonitoringSystem/internal/repository"
 	"github.com/Communinst/MonitoringSystem/internal/router"
 	"github.com/Communinst/MonitoringSystem/internal/server"
 	"github.com/Communinst/MonitoringSystem/internal/service"
-	"github.com/Communinst/MonitoringSystem/internal/k8s"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
@@ -86,13 +86,13 @@ func main() {
 	}
 	slog.Info("Set max DNS response size", "bytes", maxDnsSize)
 
-	router := router.NewRouter(setupLayers(&objs.BpfMaps))
-
 	tcManager := bpfObj.NewTcManager(&objs)
 	defer tcManager.DetachAll()
 
 	// Initialize the Pod Metadata Cache
 	podCache := k8s.NewPodCache()
+
+	router := router.NewRouter(setupLayers(&objs.BpfMaps, podCache))
 
 	nodeName := os.Getenv("NODE_NAME")
 	podWatcher, err := k8s.NewPodWatcher(podCache, nodeName)
@@ -125,6 +125,22 @@ func main() {
 		}
 	}()
 
+	// Initialize ringbuf event reader to continuously clear events and print JSON logs
+	var pusher *repository.LokiPusher
+	if cfg.Loki.URL != "" {
+		pusher = repository.NewLokiPusher(cfg.Loki.URL, nodeName)
+		go pusher.Start(ctx)
+		slog.Info("Started direct Loki pusher", "url", cfg.Loki.URL)
+	}
+
+	eventReader, err := repository.NewEventReader(&objs.BpfMaps, podCache, pusher)
+	if err != nil {
+		slog.Error("Failed to initialize event reader", "error", err)
+	} else {
+		// Start event reader in a goroutine
+		go eventReader.Run(ctx)
+	}
+
 	<-ctx.Done()
 	slog.Info("Shutdown signal received, initiating graceful shutdown...")
 
@@ -132,17 +148,18 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	if pusher != nil {
+		pusher.Stop()
+	}
+
 	if err := srvr.Shutdown(shutdownCtx); err != nil {
 		slog.Error("Forced shutdown", "error", err)
 	}
-
-	// Ожидаем завершения горутины, читающей события (после rd.Close())
-
 	slog.Info("Application exited correctly")
 }
 
-func setupLayers(b *bpfObj.BpfMaps) *handler.DNSMonitorHandler {
-	metricsRepo := repository.NewBpfMetricsRepository(b)
+func setupLayers(b *bpfObj.BpfMaps, podCache *k8s.PodCache) *handler.DNSMonitorHandler {
+	metricsRepo := repository.NewBpfMetricsRepository(b, podCache)
 	repo := repository.NewDNSMonitorRepository(metricsRepo)
 	serv := service.NewDNSMonitorService(repo)
 	reg := prometheusSetup(serv)
@@ -164,13 +181,12 @@ func bootBPF() (bpfObj.BpfObjects, error) {
 	var objs bpfObj.BpfObjects
 	if err := bpfObj.LoadBpfObjects(&objs, &ebpf.CollectionOptions{
 		Programs: ebpf.ProgramOptions{
-			LogSizeStart: 10 * 1024 * 1024,                               // 4MB — разумный старт, меньше итераций
-			LogLevel:     ebpf.LogLevelInstruction | ebpf.LogLevelBranch, // без Instruction — на порядок меньше вывода
+			LogSizeStart: 10 * 1024 * 1024,
+			LogLevel:     ebpf.LogLevelInstruction | ebpf.LogLevelBranch,
 		},
 	}); err != nil {
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {
-			// Печатаем только хвост лога — там самое важное
 			truncated := ve.Error()
 			lines := strings.Split(truncated, "\n")
 			tail := lines

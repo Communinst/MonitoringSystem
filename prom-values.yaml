@@ -20,7 +20,14 @@ prometheus:
   prometheusSpec:
     additionalScrapeConfigs: []
     additionalScrapeConfigsExternal: false
-    retention: 2d 
+    retention: 7d
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 5Gi 
     resources:
       requests:
         memory: 512Mi

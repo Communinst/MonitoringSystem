@@ -17,6 +17,9 @@ type BootCfg struct {
 		Address string        `env:"HTTP_ADDRESS" env-default:"localhost:8080"`
 		Timeout time.Duration `env:"HTTP_TIMEOUT" env-default:"10s"`
 	}
+	Loki struct {
+		URL string `env:"LOKI_URL" env-default:""`
+	}
 }
 
 func LoadNewBootCfg() (*BootCfg, error) {

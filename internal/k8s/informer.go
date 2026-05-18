@@ -16,18 +16,18 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-// PodWatcher observes Kubernetes Pods and maintains a local cache.
+
 type PodWatcher struct {
 	clientset *kubernetes.Clientset
 	cache     *PodCache
 	nodeName  string
 }
 
-// NewPodWatcher creates a new instance of a Kubernetes informer for Pods.
+
 func NewPodWatcher(cache *PodCache, nodeName string) (*PodWatcher, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		// Fallback for local development if run out-of-cluster (e.g., make run-local)
+		
 		kubeconfig := filepath.Join(os.Getenv("HOME"), ".kube", "config")
 		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
@@ -47,9 +47,9 @@ func NewPodWatcher(cache *PodCache, nodeName string) (*PodWatcher, error) {
 	}, nil
 }
 
-// Run starts the informer and blocks until the context is canceled.
+
 func (w *PodWatcher) Run(ctx context.Context) error {
-	// Limit memory load by only watching pods placed on this specific node
+	
 	tweakListOptions := func(options *metav1.ListOptions) {
 		if w.nodeName != "" {
 			options.FieldSelector = "spec.nodeName=" + w.nodeName
@@ -58,7 +58,7 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 
 	factory := informers.NewSharedInformerFactoryWithOptions(
 		w.clientset,
-		10*time.Minute,
+		0*time.Minute,
 		informers.WithTweakListOptions(tweakListOptions),
 	)
 
@@ -73,11 +73,18 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 			w.handlePodAdd(pod)
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
-			pod, ok := newObj.(*corev1.Pod)
+			oldPod, ok := oldObj.(*corev1.Pod)
 			if !ok {
 				return
 			}
-			w.handlePodAdd(pod)
+			newPod, ok := newObj.(*corev1.Pod)
+			if !ok {
+				return
+			}
+
+			if oldPod.Status.PodIP != newPod.Status.PodIP {
+				w.cache.Add(newPod)
+			}
 		},
 		DeleteFunc: func(obj interface{}) {
 			pod, ok := obj.(*corev1.Pod)

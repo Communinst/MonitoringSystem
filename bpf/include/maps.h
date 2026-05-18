@@ -40,13 +40,6 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, 14); // 0: passed, 1: anomaly_size, 2: NXDOMAIN, 3: anomaly_unexpeceted_packet;
-    __type(key, __u32);
-    __type(value, __u64); // Счетчик пакетов
-} xdp_metrics_map SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __type(key, __u32);
     __type(value, struct dns_event_full);
     __uint(max_entries, 1);

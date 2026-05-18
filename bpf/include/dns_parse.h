@@ -14,6 +14,7 @@
 #define MAX_LABEL_LEN 63 
 #define MAX_DNS_OFFSET 4096 
 #define DNS_PORT 53
+#define MDNS_PORT 5353
 #define VXLAN_PORT 4789
 
 
@@ -76,11 +77,14 @@ struct dns_event {
 
 struct dns_event_full {
     __u64 latency_ns; // 8 
-    struct src_ip_add src_ip; // 28 - по 4 - нет
-    __u16 status; // 29 
-    struct dns_event event; // 287
+    __u64 timestamp_ns; // 16
+    struct src_ip_add src_ip; // 36
+    __u16 status; // 38
+    struct dns_event event; // 296
+    struct src_ip_add dst_ip; // 316
+    __u32 qtype; // 320
 }; // 
-_Static_assert(sizeof(struct dns_event_full) == 288, "dns_event_full size mismatch");
+_Static_assert(sizeof(struct dns_event_full) == 320, "dns_event_full size mismatch");
 
 // static __always_inline void increment_metric(__u32 index) {
 //     __u64 *value = bpf_map_lookup_elem(&metrics_map, &index);
@@ -105,7 +109,11 @@ static __always_inline int parse_eth(void **cursor, void const *end) {
 }
 
 
-static __always_inline int parse_ip_v4 (void **cursor, void const *end, __be32 *ip_v) {
+static __always_inline int parse_ip_v4 (void **cursor, 
+    void const *end, 
+    __be32 *ip_v,
+    __be32 *dst_ip_v) 
+{
     struct iphdr *ip = *cursor;
 
     if ((void*)(ip + 1) > end) {
@@ -119,6 +127,7 @@ static __always_inline int parse_ip_v4 (void **cursor, void const *end, __be32 *
         return CORRUPTED;
     }
     *ip_v = ip->saddr;
+    *dst_ip_v = ip->daddr;
     
     // Check if this is a fragment (and NOT the first fragment)
     // frag_off & IP_OFFSET (0x1FFF)
@@ -136,7 +145,11 @@ static __always_inline int parse_ip_v4 (void **cursor, void const *end, __be32 *
     return ip->protocol;
 }
 
-static __always_inline int parse_ip_v6(void **cursor, void const *end, __be32 ip_v[4], const __u8 ip_v_byte_size) {
+static __always_inline int parse_ip_v6(void **cursor, 
+    void const *end, 
+    __be32 ip_v[4],
+    __be32 dst_ip_v[4], 
+    const __u8 ip_v_byte_size) {
     struct ipv6hdr *ipv6 = *cursor;
 
     if ((void*)(ipv6 + 1) > end) {
@@ -146,6 +159,7 @@ static __always_inline int parse_ip_v6(void **cursor, void const *end, __be32 ip
         return CORRUPTED;
     } 
     __builtin_memcpy(ip_v, &ipv6->saddr, ip_v_byte_size);
+    __builtin_memcpy(dst_ip_v, &ipv6->daddr, ip_v_byte_size);
     int nexthdr = ipv6->nexthdr;
     void *buf_cursor = (void *)(ipv6 + 1);
 
@@ -195,6 +209,7 @@ static __always_inline int parse_udp_for_dns(void **cursor, void *end, __u16 *ud
     struct udphdr *udp = *cursor;
 
     if ((void*)(udp + 1) > end) {
+        bpf_printk("TC ingress preparse: DNS_NO");
         return DNS_NO;
     }
 
@@ -209,8 +224,8 @@ static __always_inline int parse_udp_for_dns(void **cursor, void *end, __u16 *ud
     }
 
     *cursor = (void *)(udp + 1);
-
-    if (src_port != 53 && dest_port != 53) {
+    // bpf_printk("TC ingress p_u_f_d: %d, %d", src_port, dest_port);
+    if (src_port != DNS_PORT && dest_port != DNS_PORT && src_port != MDNS_PORT && dest_port != MDNS_PORT) {
         return DNS_NO;
     }
 
@@ -240,8 +255,8 @@ static __always_inline int parse_tcp_for_dns(void **cursor, void *end, __u16 *pa
     }
 
     *cursor = buf_cursor;
-
-    if (src_port != 53 && dest_port != 53) {
+    // bpf_printk("TC ingress p_u_f_d: %d, %d", src_port, dest_port);
+    if (src_port != DNS_PORT && dest_port != DNS_PORT && src_port != MDNS_PORT && dest_port != MDNS_PORT) {
         return DNS_NO;
     }
     __be16 *len_ptr = *cursor;
@@ -273,7 +288,7 @@ static __always_inline int parse_dns(void **cursor, void *end, __u32 *txid) {
     if (rcode >= DNS_PACKET_TOTAL_TYPES) {
         return DNS_RESPONSE_OTHER;
     }
-    return rcode; // +1 to align with DNS_PACKET_TYPE enum
+    return rcode; 
 }
 
 
@@ -317,7 +332,6 @@ static int domain_compression_cb(__u32 index, void *ctx_ptr)
         lctx->label_within--;
     }
 
-    // Теперь верификатор видит: qname_idx < MAX_QNAME_LEN — запись безопасна
     if (index + lctx->event->qname_len >= MAX_QNAME_LEN) 
     {
         lctx->result = -1;
@@ -426,7 +440,7 @@ static __always_inline int parse_domain_filtered(void *cursor, void *end, struct
 static __always_inline int xdp_parse_vxlan_from_udp(
     void **cursor,
     void *end,
-    struct hash_key *h_key) 
+    struct src_ip_add *buff) 
 {
     struct udphdr *udp = *cursor;
 
@@ -448,27 +462,24 @@ static __always_inline int xdp_parse_vxlan_from_udp(
     int ip_type = parse_eth(&buff_cursor, end);
     if (buff_cursor >= end) 
     {
-        return XDP_PASS;
+        return DNS_NO;
     }
 
     int l4_proto = 0;
-    struct hash_key h_key_buff = {};
     if (ip_type == ETH_P_IP || ip_type == ETH_P_IPV6) 
     {
         if (ip_type == ETH_P_IP) 
         {
-            (*h_key).src_ip.ip_v = 4;
-            l4_proto = parse_ip_v4(&buff_cursor, end, &h_key_buff.src_ip.ip.ipv4);
+            l4_proto = parse_ip_v4(&buff_cursor, end, &(*buff).ip.ipv4, &(*buff).ip.ipv4);
         } 
         else 
         {
-            (*h_key).src_ip.ip_v = 6;
-            l4_proto = parse_ip_v6(&buff_cursor, end, h_key_buff.src_ip.ip.ipv6, 16);
+            l4_proto = parse_ip_v6(&buff_cursor, end, (*buff).ip.ipv6, (*buff).ip.ipv6, 16);
         }
     } 
     else 
     {
-        return XDP_PASS;
+        return DNS_NO;
     }
 
     // Handling subsequent fragments in XDP is extremely difficult, 
@@ -476,14 +487,13 @@ static __always_inline int xdp_parse_vxlan_from_udp(
     // any important information for XDP monitoring.
     if (l4_proto < FRAG_HEAD) 
     {
-        return XDP_PASS;
+        return DNS_NO;
     }
     if (buff_cursor >= end) 
     {
-        return XDP_PASS;
+        return DNS_NO;
     }
     
     *cursor = buff_cursor;
-    *h_key = h_key_buff;
     return DNS_YES;
 }

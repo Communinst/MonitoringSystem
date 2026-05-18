@@ -34,3 +34,5 @@ go.mod
 # Editor/IDE
 .idea/
 .vscode/
+
+.bin/

@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-// To provide extended control custom server's used
 type Server struct {
 	httpServer *http.Server
 }
