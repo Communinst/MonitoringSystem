@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -119,12 +120,17 @@ func (p *LokiPusher) flush() {
 		return
 	}
 
-	req, err := http.NewRequest("POST", p.lokiURL+"/loki/api/v1/push", bytes.NewBuffer(data))
+	// Trim trailing slash from URL if present
+	url := strings.TrimRight(p.lokiURL, "/")
+	req, err := http.NewRequest("POST", url+"/loki/api/v1/push", bytes.NewBuffer(data))
 	if err != nil {
 		slog.Error("Failed to create Loki post request", "error", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+
+	// X-Scope-OrgID Is often required in multitenant mode, but breaks standard single-tenant
+	// req.Header.Set("X-Scope-OrgID", "dns-monitor")
 
 	resp, err := p.client.Do(req)
 	if err != nil {

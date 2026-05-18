@@ -217,7 +217,8 @@ int tc_dns_ingress(struct __sk_buff *ctx) {
     bpf_map_update_elem(&dns_hash_map, &h_key, &timestamp, BPF_ANY);
 
 
-    // temp_event->timestamp_ns = timestamp;
+    temp_event->timestamp_ns = timestamp;
+    temp_event->latency_ns = 0; // It's just a query, no latency yet
     // __u16 *qtype_ptr = (__u16 *)cursor;
     // if ((void *)(qtype_ptr + 1) > frame_end) {
     //     goto discard;
@@ -385,7 +386,9 @@ int tc_dns_egress(struct __sk_buff *ctx) {
     else 
     {
         bpf_map_delete_elem(&dns_hash_map, &h_key);
-        temp_event->latency_ns = bpf_ktime_get_ns() - *timestamp;
+        __u64 current_time = bpf_ktime_get_ns();
+        temp_event->latency_ns = current_time - *timestamp;
+        temp_event->timestamp_ns = current_time;
         bpf_ringbuf_submit(temp_event, 0);
     }
 
