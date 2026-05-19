@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"net"
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
@@ -15,7 +16,7 @@ type PodMetadata struct {
 type PodCache struct {
 	mu       sync.RWMutex
 	ipToMeta map[string]PodMetadata
-	uidToIPs map[string][]string 
+	uidToIPs map[string][]string
 }
 
 func NewPodCache() *PodCache {
@@ -88,11 +89,17 @@ func (c *PodCache) GetByIP(ip string) PodMetadata {
 	if meta, ok := c.ipToMeta[ip]; ok {
 		return meta
 	}
-
-
+	parsedIP := net.ParseIP(ip)
+	if parsedIP != nil && parsedIP.IsMulticast() {
+		return PodMetadata{
+			Name:      "mDNS",
+			Namespace: "multicast",
+			NodeName:  "multicast",
+		}
+	}
 	return PodMetadata{
-		Name:      "unknown",
-		Namespace: "unknown",
-		NodeName:  "unknown",
+		Name:      ip,
+		Namespace: "external",
+		NodeName:  "external",
 	}
 }

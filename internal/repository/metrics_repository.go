@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"net"
 
 	"github.com/Communinst/MonitoringSystem/internal/bpf"
 	"github.com/Communinst/MonitoringSystem/internal/domain"
@@ -69,7 +70,7 @@ func (r *bpfMetricsRepository) GetMetrics(ctx context.Context) (domain.BpfMetric
 
 	podMetrics, err := getTcMetrics(r)
 	if err != nil {
-	
+
 		podMetrics = make(map[string]*domain.PodMetric)
 	}
 
@@ -141,9 +142,16 @@ func getTcMetrics(r *bpfMetricsRepository) (map[string]*domain.PodMetric, error)
 			podMetas = r.resolver.GetByIP(ipStr)
 		}
 		if podMetas.Name == "" {
-			podMetas.Name = "unknown"
-			podMetas.Namespace = "unknown"
-			podMetas.NodeName = "unknown"
+			parsedIP := net.ParseIP(ipStr)
+			if parsedIP != nil && parsedIP.IsMulticast() {
+				podMetas.Name = "mDNS"
+				podMetas.Namespace = "multicast"
+				podMetas.NodeName = "multicast"
+			} else {
+				podMetas.Name = ipStr
+				podMetas.Namespace = "external"
+				podMetas.NodeName = "external"
+			}
 		}
 
 		pm, exists := podMetrics[podMetas.Name]

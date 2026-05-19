@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"time"
 
 	"github.com/Communinst/MonitoringSystem/internal/bpf"
 	"github.com/Communinst/MonitoringSystem/internal/k8s"
@@ -17,15 +18,15 @@ import (
 )
 
 type DnsEventLog struct {
-	TimestampNs uint64          `json:"timestamp_ns"`
-	LatencyNs   uint64          `json:"latency_ns,omitempty"`
-	SrcIP       string          `json:"src_ip"`
-	DstIP       string          `json:"dst_ip"`
-	SrcPod      k8s.PodMetadata `json:"src_pod"`
-	DstPod      k8s.PodMetadata `json:"dst_pod"`
-	QType       uint32          `json:"qtype"`
-	QName       string          `json:"qname"`
-	Status      string          `json:"status"`
+	Timestamp string          `json:"timestamp"`
+	LatencyNs uint64          `json:"latency_ns,omitempty"`
+	SrcIP     string          `json:"src_ip"`
+	DstIP     string          `json:"dst_ip"`
+	SrcPod    k8s.PodMetadata `json:"src_pod"`
+	DstPod    k8s.PodMetadata `json:"dst_pod"`
+	QType     uint32          `json:"qtype"`
+	QName     string          `json:"qname"`
+	Status    string          `json:"status"`
 }
 
 type EventReader struct {
@@ -76,8 +77,11 @@ func (er *EventReader) Run(ctx context.Context) {
 				continue
 			}
 
-			srcIP := parseBpfIp(event.SrcIp.IpV, event.SrcIp.Ip.Ipv4)
-			dstIP := parseBpfIp(event.DstIp.IpV, event.DstIp.Ip.Ipv4)
+			unixNs := er.bootTimeNs + event.TimestampNs
+			timestampStr := time.Unix(0, int64(unixNs)).Format(time.RFC3339Nano)
+
+			srcIP := parseBpfIp(record.RawSample, 16)
+			dstIP := parseBpfIp(record.RawSample, 296)
 
 			qnameLen := event.Event.QnameLen
 			if qnameLen > 0 && event.Event.Qname[qnameLen-1] == 0 {
@@ -94,21 +98,20 @@ func (er *EventReader) Run(ctx context.Context) {
 			dstMeta := er.resolver.GetByIP(dstIP)
 
 			logEntry := DnsEventLog{
-				TimestampNs: event.TimestampNs,
-				LatencyNs:   event.LatencyNs,
-				SrcIP:       srcIP,
-				DstIP:       dstIP,
-				SrcPod:      srcMeta,
-				DstPod:      dstMeta,
-				QType:       event.Qtype,
-				QName:       qname,
-				Status:      parseStatus(event.Status),
+				Timestamp: timestampStr,
+				LatencyNs: event.LatencyNs,
+				SrcIP:     srcIP,
+				DstIP:     dstIP,
+				SrcPod:    srcMeta,
+				DstPod:    dstMeta,
+				QType:     event.Qtype,
+				QName:     qname,
+				Status:    parseStatus(event.Status),
 			}
 
 			jsonBytes, _ := json.Marshal(logEntry)
 
 			if er.pusher != nil && er.pusher.lokiURL != "" {
-				unixNs := er.bootTimeNs + event.TimestampNs
 				er.pusher.Add(unixNs, string(jsonBytes))
 			} else {
 				os.Stdout.Write(append(jsonBytes, '\n'))
@@ -117,10 +120,15 @@ func (er *EventReader) Run(ctx context.Context) {
 	}
 }
 
-func parseBpfIp(ipV uint32, ipv4 uint32) string {
+func parseBpfIp(raw []byte, offset int) string {
+	if len(raw) < offset+20 {
+		return "unknown"
+	}
+	ipV := binary.LittleEndian.Uint32(raw[offset+16 : offset+20])
+	ipBytes := raw[offset : offset+16]
 	if ipV == 4 {
-		ipBytes := make([]byte, 4)
-		binary.LittleEndian.PutUint32(ipBytes, ipv4)
+		return net.IP(ipBytes[:4]).String()
+	} else if ipV == 6 {
 		return net.IP(ipBytes).String()
 	}
 	return "unknown"
